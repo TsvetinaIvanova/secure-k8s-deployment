@@ -8,6 +8,13 @@ PYTHON       := $(VENV)/bin/python
 IMAGE        ?= secure-k8s-app
 IMAGE_TAG    ?= 0.1.0
 APP_UID      := 65532
+REGISTRY     ?= localhost:5001
+IMAGE_REF    := $(REGISTRY)/$(IMAGE):$(IMAGE_TAG)
+# Asks the registry for the digest of what was actually pushed. Use it as $$($(IMAGE_DIGEST_CMD))
+# inside a recipe, so the shell runs it at that line. A make variable would be expanded
+# before the recipe's first line runs, i.e. before the push.
+IMAGE_DIGEST_CMD := docker buildx imagetools inspect $(IMAGE_REF) --format '{{.Manifest.Digest}}'
+
 # The cluster's kubeconfig lives in the repo (gitignored), never in ~/.kube/config,
 # so make targets and test scripts can't act on whatever cluster is the current context.
 export KUBECONFIG := $(CURDIR)/.kube/config
@@ -61,19 +68,21 @@ $(HELM): $(BIN)/.platform-ok
 	chmod +x $@.tmp && mv $@.tmp $@
 
 .PHONY: up
-up: $(KIND) $(KUBECTL) ## Create the local kind cluster (1 control plane, 2 workers)
+up: $(KIND) $(KUBECTL) ## Create the local kind cluster (1 control plane, 2 workers) and local registry
 	@if $(KIND) get clusters | grep -qx $(CLUSTER_NAME); then \
 		echo "cluster $(CLUSTER_NAME) already exists"; \
 	else \
 		$(KIND) create cluster --name $(CLUSTER_NAME) --config cluster/kind-config.yaml --wait 120s; \
 	fi
+	./cluster/registry.sh $(KIND) $(CLUSTER_NAME)
 	@# kind's --wait only covers the control plane; workers can still be NotReady here.
 	$(KUBECTL) wait --for=condition=Ready nodes --all --timeout=120s
 	$(KUBECTL) get nodes -o wide
 
 .PHONY: down
-down: $(KIND) ## Delete the local kind cluster
+down: $(KIND) ## Delete the local kind cluster and local registry
 	$(KIND) delete cluster --name $(CLUSTER_NAME)
+	docker rm -f kind-registry >/dev/null 2>&1 || true
 	rm -f $(KUBECONFIG)
 
 .PHONY: kubeconfig
@@ -89,8 +98,10 @@ smoke: build ## Run the image as Kubernetes will (read-only, non-root, no caps) 
 	./tests/smoke_container.sh $(IMAGE):$(IMAGE_TAG) $(APP_UID)
 
 .PHONY: load
-load: ## Build the image and load it into kind
-	$(call todo,Phase 2)
+load: build ## Build the image and push it to the local registry; prints the pinned reference
+	docker tag $(IMAGE):$(IMAGE_TAG) $(IMAGE_REF)
+	docker push -q $(IMAGE_REF)
+	@echo "pinned: $(IMAGE_REF)@$$($(IMAGE_DIGEST_CMD))"
 
 .PHONY: deploy
 deploy: ## helm upgrade --install the app into namespace app

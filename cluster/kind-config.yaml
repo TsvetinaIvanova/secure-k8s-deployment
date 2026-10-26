@@ -8,6 +8,14 @@
 # (images are built per kind release; don't mix kind and node image versions).
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+# Make containerd read per-registry config from /etc/containerd/certs.d/<registry>/hosts.toml.
+# The node image leaves config_path empty, so without this the hosts.toml files that
+# cluster/registry.sh writes would be ignored. (The node's config.toml uses containerd's
+# v2 config format, hence the grpc.v1.cri plugin key.)
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
 nodes:
   - role: control-plane
     image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
