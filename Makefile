@@ -3,6 +3,11 @@ SHELL := /bin/bash
 
 CLUSTER_NAME ?= secure-k8s
 NAMESPACE    ?= app
+VENV         ?= .venv
+PYTHON       := $(VENV)/bin/python
+IMAGE        ?= secure-k8s-app
+IMAGE_TAG    ?= 0.1.0
+APP_UID      := 65532
 
 # Targets not implemented yet fail loudly instead of pretending to succeed.
 define todo
@@ -23,7 +28,11 @@ down: ## Delete the local kind cluster
 
 .PHONY: build
 build: ## Build the app container image
-	$(call todo,Phase 1)
+	docker build -t $(IMAGE):$(IMAGE_TAG) app
+
+.PHONY: smoke
+smoke: build ## Run the image as Kubernetes will (read-only, non-root, no caps) and curl it
+	./tests/smoke_container.sh $(IMAGE):$(IMAGE_TAG) $(APP_UID)
 
 .PHONY: load
 load: ## Build the image and load it into kind
@@ -34,8 +43,14 @@ deploy: ## helm upgrade --install the app into namespace app
 	$(call todo,Phase 2)
 
 .PHONY: test
-test: ## Run app unit tests (python -m pytest)
-	$(call todo,Phase 1)
+test: $(VENV)/.installed ## Run app unit tests (python -m pytest)
+	cd app && ../$(PYTHON) -m pytest -v
+
+# Recreate the venv only when the pinned requirements change.
+$(VENV)/.installed: app/requirements.txt app/requirements-dev.txt
+	python3 -m venv $(VENV)
+	$(PYTHON) -m pip install -q -r app/requirements-dev.txt
+	touch $@
 
 .PHONY: test-security
 test-security: ## Run live control tests in tests/security against the cluster

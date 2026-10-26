@@ -1,0 +1,5 @@
+# Only requirements.txt and src/ are needed in the build context.
+*
+!requirements.txt
+!src/
+src/**/__pycache__

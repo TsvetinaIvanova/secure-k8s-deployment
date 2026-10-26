@@ -1,0 +1,7 @@
+# Test-only dependencies. Never installed into the runtime image.
+-r requirements.txt
+pytest==9.1.1
+# transitive
+iniconfig==2.3.1
+pluggy==1.7.0
+Pygments==2.21.0
