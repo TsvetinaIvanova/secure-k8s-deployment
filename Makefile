@@ -137,8 +137,11 @@ $(VENV)/.installed: app/requirements.txt app/requirements-dev.txt
 	touch $@
 
 .PHONY: test-security
-test-security: ## Run live control tests in tests/security against the cluster
-	$(call todo,Phase 3)
+test-security: $(KUBECTL) ## Run live control tests in tests/security against the cluster
+	@failed=0; for t in tests/security/test_*.sh; do \
+		KUBECTL=$(KUBECTL) $$t || failed=1; echo; \
+	done; \
+	if [ $$failed -eq 0 ]; then echo "ALL SECURITY TESTS PASSED"; else echo "SECURITY TESTS FAILED" >&2; exit 1; fi
 
 .PHONY: policy-test
 policy-test: ## Run Kyverno CLI tests offline (no cluster needed)
@@ -149,8 +152,8 @@ scan: ## Scan the image and manifests (Trivy)
 	$(call todo,Phase 7)
 
 .PHONY: images
-images: ## Write images.txt: every platform image pinned by digest
-	$(call todo,Phase 2)
+images: $(HELM) ## Write images.txt: every third-party image, pinned by digest and checked against its registry
+	./airgap/list-images.sh $(HELM)
 
 .PHONY: mirror
 mirror: ## Copy images.txt into the local registry by digest and verify
