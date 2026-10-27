@@ -1,0 +1,4 @@
+# Values for rendering the chart without a registry (helm lint, CI policy tests).
+# The digest is a well-formed placeholder, not a real image.
+image:
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

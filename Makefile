@@ -46,6 +46,8 @@ help: ## List all targets
 
 .PHONY: tools
 tools: $(KIND) $(KUBECTL) $(HELM) ## Download pinned kind, kubectl and helm into ./bin (checksum-verified)
+	@# Unversioned links, so `kubectl` etc. resolve to the pinned binaries once ./bin is on PATH.
+	@cd $(BIN) && ln -sf $(notdir $(KIND)) kind && ln -sf $(notdir $(KUBECTL)) kubectl && ln -sf $(notdir $(HELM)) helm
 
 $(BIN)/.platform-ok:
 	@[ "$$(uname -sm)" = "Linux x86_64" ] || { echo "pinned tool hashes are for linux/amd64 only" >&2; exit 1; }
@@ -86,7 +88,7 @@ down: $(KIND) ## Delete the local kind cluster and local registry
 	rm -f $(KUBECONFIG)
 
 .PHONY: kubeconfig
-kubeconfig: ## Print the export line for using kubectl against this cluster by hand
+kubeconfig: tools ## Print the export line for kubectl by hand; use: eval "$$(make -s kubeconfig)"
 	@echo "export KUBECONFIG=$(KUBECONFIG) PATH=$(BIN):\$$PATH"
 
 .PHONY: build
@@ -104,8 +106,25 @@ load: build ## Build the image and push it to the local registry; prints the pin
 	@echo "pinned: $(IMAGE_REF)@$$($(IMAGE_DIGEST_CMD))"
 
 .PHONY: deploy
-deploy: ## helm upgrade --install the app into namespace app
-	$(call todo,Phase 2)
+deploy: load $(HELM) $(KUBECTL) ## Push the image, create the app Secret if missing, helm upgrade --install into namespace app
+	$(KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@# The Secret lives outside the chart (ADR 0005). It is created once with a random value,
+	@# piped through stdin so it never appears in process arguments, the shell history or a file.
+	@# `create` (not `apply`) also avoids the last-applied-configuration annotation, which would
+	@# store a second copy of the value.
+	@$(KUBECTL) -n $(NAMESPACE) get secret app-secret >/dev/null 2>&1 || { \
+		head -c 32 /dev/urandom | base64 | tr -d '\n' | \
+		$(KUBECTL) -n $(NAMESPACE) create secret generic app-secret --from-file=token=/dev/stdin; }
+	@# --wait=watcher: Helm 4 doesn't wait by default. No --rollback-on-failure, so a failed
+	@# rollout stays in place for kubectl describe/logs.
+	$(HELM) upgrade --install app charts/app --namespace $(NAMESPACE) \
+		--set image.registry=$(REGISTRY) --set image.digest=$$($(IMAGE_DIGEST_CMD)) \
+		--wait=watcher --timeout 2m
+	$(KUBECTL) -n $(NAMESPACE) get pods -o wide
+
+.PHONY: lint
+lint: $(HELM) ## helm lint the chart (placeholder digest, no registry needed)
+	$(HELM) lint charts/app -f charts/app/ci/lint-values.yaml
 
 .PHONY: test
 test: $(VENV)/.installed ## Run app unit tests (python -m pytest)

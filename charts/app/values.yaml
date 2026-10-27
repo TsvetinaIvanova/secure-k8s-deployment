@@ -1,0 +1,42 @@
+replicaCount: 2
+
+# Registry is its own value so moving to a mirror (Phase 8) is a one-value change.
+# The digest is not committed: make deploy reads it from the registry at deploy time,
+# because every build produces a new index digest (see docs/adr/0003-local-registry.md).
+image:
+  registry: localhost:5001
+  repository: secure-k8s-app
+  tag: "0.1.0"
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Fixed IDs, matching USER 65532:65532 in app/Dockerfile.
+podSecurity:
+  uid: 65532
+  gid: 65532
+
+config:
+  greeting: hello from kubernetes
+
+# The Secret is created outside the chart (make deploy, later Vault/ESO), so its value
+# never ends up in Helm's release history. See docs/adr/0005-secret-outside-chart.md.
+secret:
+  name: app-secret
+  key: token
+  mountPath: /etc/app/secret
+
+service:
+  port: 80
+
+containerPort: 8080
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 500m
+    memory: 192Mi
+
+# /tmp is the only writable path (gunicorn heartbeat files). Capped so a bug can't fill the node's disk.
+tmpSizeLimit: 16Mi
