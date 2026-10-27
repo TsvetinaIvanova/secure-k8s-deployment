@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "app.labels" . | nindent 8 }}
+      annotations:
+        # Env vars are read once at container start, so a ConfigMap change must roll the pods.
+        # A changed pod template is what triggers a rollout; this hash makes the change visible.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "app.fullname" . }}
+      # The app never calls the Kubernetes API, so no token is mounted (see also serviceaccount.yaml).
+      automountServiceAccountToken: false
+      # Pod-level settings apply to every container, including ephemeral debug containers.
+      securityContext:
+        runAsNonRoot: true                    # PSA restricted: must not run as UID 0
+        runAsUser: {{ .Values.podSecurity.uid }}
+        runAsGroup: {{ .Values.podSecurity.gid }}
+        fsGroup: {{ .Values.podSecurity.gid }}  # volume files group-owned by the app's GID
+        seccompProfile:
+          type: RuntimeDefault                # PSA restricted: seccomp must be RuntimeDefault or Localhost
+      # Spread the replicas across nodes, so losing one node doesn't take the service down.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "app.selectorLabels" . | nindent 14 }}
+      containers:
+        - name: app
+          image: {{ include "app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+          env:
+            - name: APP_GREETING
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "app.fullname" . }}
+                  key: greeting
+            - name: APP_SECRET_FILE
+              value: {{ printf "%s/%s" .Values.secret.mountPath .Values.secret.key | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false   # PSA restricted: no setuid gaining privileges
+            readOnlyRootFilesystem: true      # not required by PSA; enforced by Kyverno later
+            capabilities:
+              drop: ["ALL"]                   # PSA restricted: drop ALL (only NET_BIND_SERVICE may be added back)
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # Liveness: restart if the process stops answering. Readiness: no traffic until the secret is present.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # The whole directory is mounted, not a single file with subPath: subPath mounts
+            # never receive Secret updates, which would break rotation without a restart.
+            - name: secret
+              mountPath: {{ .Values.secret.mountPath }}
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpSizeLimit }}
+        - name: secret
+          secret:
+            secretName: {{ .Values.secret.name }}
+            # Owner and group read only; fsGroup makes the app's GID the group.
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secret.key }}
+                path: {{ .Values.secret.key }}

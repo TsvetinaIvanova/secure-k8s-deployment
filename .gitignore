@@ -36,3 +36,6 @@ trivy-*.json
 .vscode/
 .idea/
 .DS_Store
+
+# Pinned CLI tools (make tools)
+bin/
