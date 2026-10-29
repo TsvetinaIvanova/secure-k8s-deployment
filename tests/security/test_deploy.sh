@@ -3,7 +3,6 @@
 # and the secret kept out of Helm's release history.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
-NS=app
 echo "== test_deploy: namespace $NS"
 
 images=$(k -n $NS get pods -l app.kubernetes.io/name=app -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}')
