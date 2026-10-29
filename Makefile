@@ -2,7 +2,9 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 CLUSTER_NAME ?= secure-k8s
-NAMESPACE    ?= app
+# Fixed, not a setting: platform/ manifests name this namespace (ADR 0006). `override`
+# because a plain assignment still loses to `make deploy NAMESPACE=...` on the command line.
+override NAMESPACE := app
 VENV         ?= .venv
 PYTHON       := $(VENV)/bin/python
 IMAGE        ?= secure-k8s-app
@@ -105,9 +107,12 @@ load: build ## Build the image and push it to the local registry; prints the pin
 	docker push -q $(IMAGE_REF)
 	@echo "pinned: $(IMAGE_REF)@$$($(IMAGE_DIGEST_CMD))"
 
+.PHONY: platform
+platform: $(KUBECTL) ## Apply platform resources: namespaces with Pod Security labels
+	$(KUBECTL) apply -f platform/namespaces.yaml
+
 .PHONY: deploy
-deploy: load $(HELM) $(KUBECTL) ## Push the image, create the app Secret if missing, helm upgrade --install into namespace app
-	$(KUBECTL) create namespace $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+deploy: load $(HELM) platform ## Push the image, apply platform resources, create the app Secret if missing, helm upgrade --install
 	@# The Secret lives outside the chart (ADR 0005). It is created once with a random value,
 	@# piped through stdin so it never appears in process arguments, the shell history or a file.
 	@# `create` (not `apply`) also avoids the last-applied-configuration annotation, which would

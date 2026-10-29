@@ -1,6 +1,9 @@
 # Shared helpers for tests/security/test_*.sh. Source it; don't run it.
 # Requires KUBECONFIG and KUBECTL in the environment (set by make test-security).
 
+# The app namespace: fixed, like NAMESPACE in the Makefile (ADR 0006).
+NS=app
+
 FAILED=0
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; FAILED=1; }

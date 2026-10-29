@@ -1,0 +1,20 @@
+# Namespaces owned by the platform, not by Helm: the security labels must exist
+# before the first pod is admitted. Applied by `make platform` (run by `make deploy`).
+#
+# Pod Security Admission (built into the API server) reads these labels:
+#   enforce: violating pods are rejected
+#   audit:   violations are recorded in the API audit log, pod admitted
+#   warn:    violations are returned to the client as warnings, pod admitted
+# enforce is pinned to the cluster's minor version so an upgrade can't change what is
+# rejected; warn/audit track latest to preview the next version's rules (ADR 0006).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.37
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
