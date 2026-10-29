@@ -44,6 +44,8 @@ curl localhost:8080/
 
 The cluster's kubeconfig is kept in the repo (`.kube/config`, gitignored), never merged into `~/.kube/config`, so make targets and tests can't act on another cluster by accident.
 
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`, calling the same targets: `test`, `lint`, `images` (plus a check that the committed `images.txt` is current) and `smoke`. Actions are pinned by commit SHA and the workflow token is read-only. The security gates (secrets scan, SAST, image and IaC scans, policy tests, e2e) are Phase 7.
+
 ## Security controls
 
 | Control | Threat mitigated | Implemented in | Verified by |
@@ -52,8 +54,8 @@ The cluster's kubeconfig is kept in the repo (`.kube/config`, gitignored), never
 | Works with a read-only root filesystem; code owned by root | Attacker modifies the app or drops tools into the image | [app/Dockerfile](app/Dockerfile); only `/tmp` is written | `make smoke` runs with `--read-only --tmpfs /tmp` and fails on any `[ERROR]` log line |
 | Distroless runtime: no shell or package manager | Command injection through `sh -c`, post-exploitation tooling, CVEs in unused packages | [app/Dockerfile](app/Dockerfile), [ADR 0001](docs/adr/0001-base-image.md) | `make smoke`: `docker exec ... /bin/sh` fails |
 | Secret read from a mounted file on each request, never returned | Secret leaked via env vars, `/proc` or `kubectl describe`; stale secret after rotation | [app/src/service.py](app/src/service.py) | `make test`: rotation and no-leak tests; `make smoke`: response does not contain the secret |
-| Base images pinned by digest; Python dependencies fully pinned; wheels only | Unreviewed upstream changes, build-time code execution from source packages | [app/Dockerfile](app/Dockerfile), [app/requirements.txt](app/requirements.txt) | `make images` fails on an unpinned image or a digest its registry doesn't have; Python pins checked in CI (Phase 7) |
-| Cluster tools at pinned versions, verified against SHA-256 hashes stored in the repo | Tampered or swapped download of kind, kubectl or Helm | [Makefile](Makefile) (`make tools`) | A wrong hash stops the install (checked when added) |
+| Base images pinned by digest; Python dependencies fully pinned; wheels only | Unreviewed upstream changes, build-time code execution from source packages | [app/Dockerfile](app/Dockerfile), [app/requirements.txt](app/requirements.txt) | `make images` fails on an unpinned image or a digest its registry doesn't have; CI runs it on every PR and fails if `images.txt` is stale; dependency audit in Phase 7 |
+| Cluster tools at pinned versions, verified against SHA-256 hashes stored in the repo | Tampered or swapped download of kind, kubectl or Helm | [Makefile](Makefile) (`make tools`) | A wrong hash stops the install (checked when added); CI downloads and verifies Helm on every run |
 | Repo-local kubeconfig | Make targets or security tests running against the wrong cluster | [Makefile](Makefile) (`KUBECONFIG`) | Plain `kubectl` without it cannot reach the cluster |
 | App image pinned by digest, served from a local registry | Running different bytes than were built; a moved tag | [charts/app/values.schema.json](charts/app/values.schema.json), [ADR 0003](docs/adr/0003-local-registry.md) | Schema rejects a missing digest or `latest`; `test_deploy.sh`: all pods reference a digest; a wrong digest fails with `ErrImagePull` (checked when added) |
 | Hardened pod spec: non-root, RuntimeDefault seccomp, no privilege escalation, drop ALL capabilities, read-only root filesystem | Container breakout and privilege escalation from a compromised app | [charts/app/templates/deployment.yaml](charts/app/templates/deployment.yaml) | `test_psa.sh`: running app pods meet `restricted`; read-only root filesystem enforced by Kyverno in Phase 5 |
