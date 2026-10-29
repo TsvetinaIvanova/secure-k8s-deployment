@@ -1,0 +1,62 @@
+# Baseline CI: unit tests, chart lint, image inventory, hardened-container smoke test.
+# Jobs call the same make targets as a local run, so CI and a laptop check the same things.
+# The security gates (secrets scan, SAST, image/IaC scan, policy tests, e2e) come in Phase 7.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only token by default; no job writes to the repo, packages or PRs.
+permissions:
+  contents: read
+
+# A new push to the same PR cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Actions pinned by commit SHA: a tag can be moved to other code, a SHA can't.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false   # don't leave the token in .git/config for later steps
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"       # the runtime image's Python (app/Dockerfile)
+          cache: pip
+          cache-dependency-path: app/requirements*.txt
+      # Wheels only, as in the image build: no package's setup.py runs.
+      # Quoted: an unquoted ": " (as in ":all: ") would be parsed as a YAML mapping.
+      - run: "python -m pip install --only-binary=:all: -r app/requirements-dev.txt"
+      - run: python -m pytest -v
+        working-directory: app
+
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      # make downloads the pinned Helm and checks it against the hash in the Makefile.
+      - run: make lint
+      # Fails on an image without a digest or a digest its registry doesn't have; the diff
+      # fails if a pin changed but the committed images.txt (Phase 8's mirror list) didn't.
+      - run: make images
+      - run: git diff --exit-code images.txt
+
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      # Builds the image and runs it read-only, non-root, with no capabilities.
+      - run: make smoke
