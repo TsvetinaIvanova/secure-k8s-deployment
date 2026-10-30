@@ -11,7 +11,7 @@ Portfolio project: a trivial Flask service on a local kind cluster, with the dep
 - Explain the root cause or reasoning before changing code; keep fixes targeted.
 - Non-obvious decisions get an ADR in `docs/adr/` (template `0000-template.md`), under a page each.
 - Every routine action is a `make` target.
-- Docs describe the project on its own merits (platform security, regulated and disconnected environments). Never frame it as preparation for a particular employer or listing.
+- Docs describe the project on its own merits (platform security, regulated and disconnected environments).
 - Never commit secrets, kubeconfigs or tokens.
 
 ## Conventions
