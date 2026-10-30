@@ -108,3 +108,7 @@ Architecture decision records live in [docs/adr/](docs/adr/).
 - [0004: Package the app as a Helm chart](docs/adr/0004-helm.md)
 - [0005: Keep the app Secret out of the Helm chart](docs/adr/0005-secret-outside-chart.md)
 - [0006: Pod Security Admission: pinned enforce, latest warn/audit, namespace owned by the platform](docs/adr/0006-psa-versions.md)
+
+## License
+
+[MIT](LICENSE)
