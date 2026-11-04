@@ -2,7 +2,7 @@
 
 A deliberately small Python web service deployed to a local Kubernetes cluster, with the effort going into the platform around it: how the service is built, shipped, constrained and verified. The focus is platform security for regulated and disconnected (air-gapped) environments.
 
-**Status:** in progress. Phases 0 to 3 are done: scaffold, hardened container, a Helm deployment to a local kind cluster, and Pod Security Admission at `restricted`.
+**Status:** in progress. Phases 0 to 4 are done: scaffold, hardened container, a Helm deployment to a local kind cluster, Pod Security Admission at `restricted`, and default-deny NetworkPolicies.
 
 ## What it covers
 
@@ -35,12 +35,15 @@ make smoke           # run the image read-only / non-root / no capabilities in D
 make lint            # helm lint the chart
 make platform        # apply platform resources only (namespaces with Pod Security labels)
 make images          # regenerate images.txt and check every pinned digest against its registry
+make clean-test-pods # delete pods left behind by a killed security test run
 make down            # delete the cluster and the registry
 
 eval "$(make -s kubeconfig)"            # use the pinned kubectl against this cluster in your shell
 kubectl -n app port-forward svc/app 8080:80 &
 curl localhost:8080/
 ```
+
+Port-forward works under default-deny because it doesn't arrive through the pod network. In-cluster traffic is limited to the `test-client` pod in namespace `client`.
 
 The cluster's kubeconfig is kept in the repo (`.kube/config`, gitignored), never merged into `~/.kube/config`, so make targets and tests can't act on another cluster by accident.
 
@@ -59,10 +62,12 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull req
 | Repo-local kubeconfig | Make targets or security tests running against the wrong cluster | [Makefile](Makefile) (`KUBECONFIG`) | Plain `kubectl` without it cannot reach the cluster |
 | App image pinned by digest, served from a local registry | Running different bytes than were built; a moved tag | [charts/app/values.schema.json](charts/app/values.schema.json), [ADR 0003](docs/adr/0003-local-registry.md) | Schema rejects a missing digest or `latest`; `test_deploy.sh`: all pods reference a digest; a wrong digest fails with `ErrImagePull` (checked when added) |
 | Hardened pod spec: non-root, RuntimeDefault seccomp, no privilege escalation, drop ALL capabilities, read-only root filesystem | Container breakout and privilege escalation from a compromised app | [charts/app/templates/deployment.yaml](charts/app/templates/deployment.yaml) | `test_psa.sh`: running app pods meet `restricted`; read-only root filesystem enforced by Kyverno in Phase 5 |
-| Pod Security Admission `restricted` (enforce pinned to v1.37; warn and audit at latest) on namespace `app` | Privileged, root or host-access pods scheduled into the app namespace, by mistake or by someone with deploy rights | [platform/namespaces.yaml](platform/namespaces.yaml), [ADR 0006](docs/adr/0006-psa-versions.md) | `test_psa.sh`: a privileged, a root and a hostPath pod are rejected with the PSA reason; the same pod without the violation is admitted |
+| Pod Security Admission `restricted` (enforce pinned to v1.37; warn and audit at latest) on namespace `app` | Privileged, root or host-access pods scheduled into the app namespace, by mistake or by someone with deploy rights | [platform/namespaces.yaml](platform/namespaces.yaml), [ADR 0006](docs/adr/0006-psa-versions.md) | `test_psa.sh`: a privileged, a root, a hostPath and a hostNetwork pod are rejected with the PSA reason; the same pod without the violation is admitted |
 | Dedicated ServiceAccount: no token mounted, no RoleBindings | A compromised app uses its token against the Kubernetes API | [serviceaccount.yaml](charts/app/templates/serviceaccount.yaml), [deployment.yaml](charts/app/templates/deployment.yaml) | `test_deploy.sh`: no token volume; `can-i` denies list pods, get secrets, create pods |
 | App Secret created outside Helm, from stdin, mounted as a read-only directory | Secret kept in Helm's release history, shell history or an apply annotation | [Makefile](Makefile) (`make deploy`), [ADR 0005](docs/adr/0005-secret-outside-chart.md) | `test_deploy.sh`: the decoded release record doesn't contain the value; app serves its fingerprint, never the value |
-| NetworkPolicy-enforcing CNI | Policies accepted but silently not enforced | [cluster/kind-config.yaml](cluster/kind-config.yaml), [ADR 0002](docs/adr/0002-cni.md) | Checked across nodes when chosen; `test_netpol.sh` in Phase 4 |
+| NetworkPolicy-enforcing CNI | Policies accepted but silently not enforced | [cluster/kind-config.yaml](cluster/kind-config.yaml), [ADR 0002](docs/adr/0002-cni.md) | `test_netpol.sh`: blocked traffic times out, and controls show the same destinations answer for a pod with no policy |
+| Default-deny ingress and egress for every pod in namespace `app`, including DNS | Lateral movement to the app; a compromised app reaching other services or exfiltrating data | [platform/networkpolicies/networkpolicy-app.yaml](platform/networkpolicies/networkpolicy-app.yaml), [ADR 0007](docs/adr/0007-network-policies.md) | `test_netpol.sh`: a pod in `app` can't reach the API server by IP or by name; no egress rules exist in the namespace; app pods stay Ready |
+| Ingress only from `test-client` pods in namespace `client`, TCP 8080 only | Any other workload in the cluster calling the app | [platform/networkpolicies/networkpolicy-app.yaml](platform/networkpolicies/networkpolicy-app.yaml) | `test_netpol.sh`: the allowed pod connects; another port, an unlabelled pod in `client` and a pod in another namespace are all blocked |
 
 ## Repository layout
 
@@ -88,7 +93,7 @@ docs/adr/           architecture decision records
 | 1 | Application and hardened container | done |
 | 2 | Local cluster and Helm deployment | done |
 | 3 | Pod Security Admission | done |
-| 4 | Network Policies | |
+| 4 | Network Policies | done |
 | 5 | Kyverno policy-as-code | |
 | 6 | RBAC and least privilege | |
 | 7 | CI pipeline with security gates | |
@@ -108,6 +113,7 @@ Architecture decision records live in [docs/adr/](docs/adr/).
 - [0004: Package the app as a Helm chart](docs/adr/0004-helm.md)
 - [0005: Keep the app Secret out of the Helm chart](docs/adr/0005-secret-outside-chart.md)
 - [0006: Pod Security Admission: pinned enforce, latest warn/audit, namespace owned by the platform](docs/adr/0006-psa-versions.md)
+- [0007: NetworkPolicies: platform-owned, no egress, standard API only](docs/adr/0007-network-policies.md)
 
 ## License
 
