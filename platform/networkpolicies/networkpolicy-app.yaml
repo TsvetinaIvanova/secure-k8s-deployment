@@ -1,0 +1,38 @@
+
+# Deny ingress and egress traffic by default for all pods in the namespace. This is a security best practice to ensure that only explicitly allowed traffic can reach your pods. 
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: app
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-client-ingress
+  namespace: app
+spec:
+  podSelector:
+    matchLabels:
+       app.kubernetes.io/name: app
+       app.kubernetes.io/instance: app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: test-client
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: client
+      ports:
+        - protocol: TCP
+          port: 8080

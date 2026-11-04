@@ -62,6 +62,9 @@ expect_rejected "root user (runAsUser 0, runAsNonRoot unset)" \
 expect_rejected "hostPath volume" \
   "$(pod hostpath "$POD_SC" "$CTR_SC" '      volumeMounts: [{name: host, mountPath: /host}]' \
      '  volumes: [{name: host, hostPath: {path: /}}]')"
+# hostNetwork pods generally aren't subject to NetworkPolicy, so this also keeps ADR 0007's policies from being sidestepped.
+expect_rejected "host network" \
+  "$(pod hostnet "$POD_SC" "$CTR_SC" '' '  hostNetwork: true')"
 
 # PSA checks pods only when they are created or updated. Labelling an existing namespace
 # never evicts anything, so ask the API server whether the running pods meet the level.

@@ -108,8 +108,9 @@ load: build ## Build the image and push it to the local registry; prints the pin
 	@echo "pinned: $(IMAGE_REF)@$$($(IMAGE_DIGEST_CMD))"
 
 .PHONY: platform
-platform: $(KUBECTL) ## Apply platform resources: namespaces with Pod Security labels
+platform: $(KUBECTL) ## Apply platform resources: namespaces with Pod Security labels, network policies, etc.
 	$(KUBECTL) apply -f platform/namespaces.yaml
+	$(KUBECTL) apply -f platform/networkpolicies/
 
 .PHONY: deploy
 deploy: load $(HELM) platform ## Push the image, apply platform resources, create the app Secret if missing, helm upgrade --install
@@ -147,6 +148,10 @@ test-security: $(KUBECTL) ## Run live control tests in tests/security against th
 		KUBECTL=$(KUBECTL) $$t || failed=1; echo; \
 	done; \
 	if [ $$failed -eq 0 ]; then echo "ALL SECURITY TESTS PASSED"; else echo "SECURITY TESTS FAILED" >&2; exit 1; fi
+
+.PHONY: clean-test-pods
+clean-test-pods: $(KUBECTL) ## Delete pods left behind by a killed security test run
+	$(KUBECTL) delete pods -A -l security-test --ignore-not-found
 
 .PHONY: policy-test
 policy-test: ## Run Kyverno CLI tests offline (no cluster needed)

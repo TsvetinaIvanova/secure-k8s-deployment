@@ -30,6 +30,7 @@ qualify() {
 collect() {
   sed -n 's/^ *image: *//p' cluster/kind-config.yaml | sed 's/^/cluster\/kind-config.yaml|/'
   sed -n 's/^REG_IMAGE=//p' cluster/registry.sh | sed 's/^/cluster\/registry.sh|/'
+  sed -n 's/^TEST_IMAGE=//p' tests/security/test_netpol.sh | sed 's/^/tests\/security\/test_netpol.sh|/'
   awk 'toupper($1) == "FROM" {print "app/Dockerfile|" $2}' app/Dockerfile
   "$HELM" template app charts/app -f charts/app/ci/lint-values.yaml \
     | sed -n 's/^ *image: *//p' | tr -d '"' | grep -v "/$APP_REPO:" \
