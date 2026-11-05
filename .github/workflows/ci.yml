@@ -1,6 +1,6 @@
 # Baseline CI: unit tests, chart lint, image inventory, hardened-container smoke test.
 # Jobs call the same make targets as a local run, so CI and a laptop check the same things.
-# The security gates (secrets scan, SAST, image/IaC scan, policy tests, e2e) come in Phase 7.
+# The security gates (secrets scan, SAST, image/IaC scan, e2e) come in Phase 7.
 name: ci
 
 on:

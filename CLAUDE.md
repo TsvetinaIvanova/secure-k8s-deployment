@@ -1,6 +1,6 @@
 # Secure Kubernetes Deployment
 
-Portfolio project: a trivial Flask service on a local kind cluster, with the depth in the platform (PSA, NetworkPolicy, Kyverno, RBAC, CI security gates, air-gap, Vault). Everything must be defensible in a review without notes. Be direct, flag tradeoffs honestly, push back if something doesn't fit.
+Portfolio project: a trivial Flask service on a local kind cluster, with the depth in the platform (PSA, NetworkPolicy, RBAC, native admission policies, CI security gates, air-gap; Kyverno and Vault as stretch goals). Everything must be defensible in a review without notes. Be direct, flag tradeoffs honestly, push back if something doesn't fit.
 
 ## Working rules
 

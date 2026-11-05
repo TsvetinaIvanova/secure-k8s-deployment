@@ -55,7 +55,7 @@ spec:
               value: {{ printf "%s/%s" .Values.secret.mountPath .Values.secret.key | quote }}
           securityContext:
             allowPrivilegeEscalation: false   # PSA restricted: no setuid gaining privileges
-            readOnlyRootFilesystem: true      # not required by PSA; enforced by Kyverno later
+            readOnlyRootFilesystem: true      # not required by PSA; enforced by a ValidatingAdmissionPolicy later (Phase 6a)
             capabilities:
               drop: ["ALL"]                   # PSA restricted: drop ALL (only NET_BIND_SERVICE may be added back)
           resources:
