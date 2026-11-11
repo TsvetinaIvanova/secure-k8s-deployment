@@ -24,7 +24,8 @@ for verb in "list pods" "get secrets" "create pods"; do
 done
 
 token=$(k -n $NS get secret app-secret -o jsonpath='{.data.token}' | base64 -d)
-release=$(k -n $NS get secret -l owner=helm,status=deployed -o jsonpath='{.items[0].data.release}' | base64 -d | base64 -d | gunzip)
+# Helm's configmap driver (ADR 0009): the record is gzipped JSON, base64-encoded once.
+release=$(k -n $NS get configmap -l owner=helm,status=deployed -o jsonpath='{.items[0].data.release}' | base64 -d | gunzip)
 if [[ -z $token || -z $release ]]; then
   fail "could not read the app Secret or the Helm release record"
 elif grep -qF "$token" <<<"$release"; then

@@ -25,7 +25,7 @@ Pods accept traffic from anywhere in the cluster and can send it anywhere unless
 ## Consequences
 
 - If the chart changes its selector labels or port, the policy doesn't follow. Traffic is blocked rather than opened, and `test_netpol.sh` fails.
-- NetworkPolicy has no explicit deny, so anyone who can write one in `app` can widen access. RBAC must exclude that from the deployer (Phase 6).
+- NetworkPolicy has no explicit deny, so anyone who can write one in `app` can widen access. RBAC must exclude that from the deployer (done in Phase 6, ADR 0009).
 - New namespaces start open, and `client` and `default` have no policies. Kyverno `generate` can create a default-deny (Phase 5).
 - Traffic from a pod's own node is always allowed, so kubelet probes need no rule. `kubectl port-forward` also keeps working, so it proves nothing about policy; the tests send traffic from real pods.
 - `hostNetwork` pods generally aren't subject to NetworkPolicy. PSA `restricted` rejects them in `app` (`test_psa.sh`).

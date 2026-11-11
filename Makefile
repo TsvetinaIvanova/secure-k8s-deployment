@@ -20,6 +20,11 @@ IMAGE_DIGEST_CMD := docker buildx imagetools inspect $(IMAGE_REF) --format '{{.M
 # The cluster's kubeconfig lives in the repo (gitignored), never in ~/.kube/config,
 # so make targets and test scripts can't act on whatever cluster is the current context.
 export KUBECONFIG := $(CURDIR)/.kube/config
+# Helm runs as the deployer ServiceAccount, with a 10-minute token written here by
+# `make deploy` (ADR 0009). The admin kubeconfig above is for the cluster, platform and tests.
+DEPLOYER_KUBECONFIG := $(CURDIR)/.kube/deployer
+# Helm's release record goes into ConfigMaps, so the deployer needs no access to Secrets (ADR 0009).
+export HELM_DRIVER := configmap
 
 # Pinned CLI tools, downloaded into ./bin and checked against these hashes.
 # The hashes are pinned here rather than fetched next to the binary: a checksum served
@@ -87,7 +92,7 @@ up: $(KIND) $(KUBECTL) ## Create the local kind cluster (1 control plane, 2 work
 down: $(KIND) ## Delete the local kind cluster and local registry
 	$(KIND) delete cluster --name $(CLUSTER_NAME)
 	docker rm -f kind-registry >/dev/null 2>&1 || true
-	rm -f $(KUBECONFIG)
+	rm -f $(KUBECONFIG) $(DEPLOYER_KUBECONFIG)
 
 .PHONY: kubeconfig
 kubeconfig: tools ## Print the export line for kubectl by hand; use: eval "$$(make -s kubeconfig)"
@@ -108,22 +113,25 @@ load: build ## Build the image and push it to the local registry; prints the pin
 	@echo "pinned: $(IMAGE_REF)@$$($(IMAGE_DIGEST_CMD))"
 
 .PHONY: platform
-platform: $(KUBECTL) ## Apply platform resources: namespaces with Pod Security labels, network policies, etc.
+platform: $(KUBECTL) ## Apply platform resources as admin: namespaces (Pod Security labels), network policies, deployer RBAC, app Secret
 	$(KUBECTL) apply -f platform/namespaces.yaml
 	$(KUBECTL) apply -f platform/networkpolicies/
-
-.PHONY: deploy
-deploy: load $(HELM) platform ## Push the image, apply platform resources, create the app Secret if missing, helm upgrade --install
-	@# The Secret lives outside the chart (ADR 0005). It is created once with a random value,
-	@# piped through stdin so it never appears in process arguments, the shell history or a file.
-	@# `create` (not `apply`) also avoids the last-applied-configuration annotation, which would
-	@# store a second copy of the value.
+	$(KUBECTL) apply -f platform/rbac/
+	@# The Secret lives outside the chart (ADR 0005), and the deployer can't touch Secrets
+	@# (ADR 0009), so the platform creates it. Once, with a random value piped through stdin
+	@# so it never appears in process arguments, the shell history or a file. `create` (not
+	@# `apply`) also avoids the last-applied-configuration annotation, which would store a
+	@# second copy of the value.
 	@$(KUBECTL) -n $(NAMESPACE) get secret app-secret >/dev/null 2>&1 || { \
 		head -c 32 /dev/urandom | base64 | tr -d '\n' | \
 		$(KUBECTL) -n $(NAMESPACE) create secret generic app-secret --from-file=token=/dev/stdin; }
+
+.PHONY: deploy
+deploy: load $(HELM) platform ## Push the image, apply platform resources, helm upgrade --install as the deployer ServiceAccount
+	./cluster/deployer-kubeconfig.sh $(KUBECTL) $(DEPLOYER_KUBECONFIG)
 	@# --wait=watcher: Helm 4 doesn't wait by default. No --rollback-on-failure, so a failed
 	@# rollout stays in place for kubectl describe/logs.
-	$(HELM) upgrade --install app charts/app --namespace $(NAMESPACE) \
+	KUBECONFIG=$(DEPLOYER_KUBECONFIG) $(HELM) upgrade --install app charts/app --namespace $(NAMESPACE) \
 		--set image.registry=$(REGISTRY) --set image.digest=$$($(IMAGE_DIGEST_CMD)) \
 		--wait=watcher --timeout 2m
 	$(KUBECTL) -n $(NAMESPACE) get pods -o wide

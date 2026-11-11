@@ -1,0 +1,57 @@
+# The identity that runs `helm upgrade --install` for the app (ADR 0009). Applied by
+# `make platform`; `make deploy` runs Helm with a short-lived token for it.
+#
+# The ServiceAccount lives in its own namespace, where nothing runs: a pod can only use
+# a ServiceAccount from its own namespace, so nothing deployed into `app` can run as it.
+# No Secret-based token exists for it; tokens come from the TokenRequest API and expire.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-deployer
+  namespace: deploy
+automountServiceAccountToken: false
+
+---
+# Only what Helm needs to install, upgrade, wait for and roll back the chart in `app`.
+# Deliberately missing:
+#   secrets                       Helm keeps its release record in ConfigMaps (HELM_DRIVER=configmap)
+#   pods create, pods/exec, pods/attach, pods/portforward, pods/log, pods/ephemeralcontainers
+#   serviceaccounts/token         no minting tokens for other identities
+#   networkpolicies               only the platform widens or narrows traffic (ADR 0007)
+#   roles, rolebindings           no granting access, including to itself
+#   namespaces, cluster scope     a Role can't grant them, and nothing here binds a ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-deployer
+  namespace: app
+rules:
+  # Objects the chart renders, plus ConfigMaps for Helm's release record.
+  - apiGroups: [""]
+    resources: [configmaps, services, serviceaccounts]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Read-only, for `--wait=watcher` to follow the rollout.
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-deployer
+  namespace: app
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-deployer
+subjects:
+  - kind: ServiceAccount
+    name: app-deployer
+    namespace: deploy
