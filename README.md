@@ -2,7 +2,7 @@
 
 A deliberately small Python web service deployed to a local Kubernetes cluster, with the effort going into the platform around it: how the service is built, shipped, constrained and verified. The focus is platform security for regulated and disconnected (air-gapped) environments.
 
-**Status:** in progress. Phases 0 to 4 are done: scaffold, hardened container, a Helm deployment to a local kind cluster, Pod Security Admission at `restricted`, and default-deny NetworkPolicies. Phases that add external tooling to the cluster (Kyverno, Vault, Loki and Grafana, cosign `verifyImages`) are stretch goals until the security measures that apply to a clean Kubernetes cluster are covered ([ADR 0008](docs/adr/0008-native-controls-first.md)). Today, nothing beyond PSA's fixed rules is enforced at admission; Phase 6a is planned to close that gap with built-in admission policies.
+**Status:** in progress. Phases 0 to 4 and 6 are done: scaffold, hardened container, a Helm deployment to a local kind cluster, Pod Security Admission at `restricted`, default-deny NetworkPolicies, and least-privilege RBAC for the identity that deploys. Phases that add external tooling to the cluster (Kyverno, Vault, Loki and Grafana, cosign `verifyImages`) are stretch goals until the security measures that apply to a clean Kubernetes cluster are covered ([ADR 0008](docs/adr/0008-native-controls-first.md)). Today, nothing beyond PSA's fixed rules is enforced at admission; Phase 6a is planned to close that gap with built-in admission policies.
 
 ## Implemented
 
@@ -10,13 +10,13 @@ A deliberately small Python web service deployed to a local Kubernetes cluster, 
 - Helm deployment to a local [kind](https://kind.sigs.k8s.io/) cluster
 - Pod Security Admission (`restricted`) and default-deny NetworkPolicies with no egress
 - An app ServiceAccount with no token mounted and no permissions
+- Helm runs as a deployer ServiceAccount limited to the app's own objects, with 10-minute tokens: no Secrets, no `exec`, no changes to NetworkPolicies or RBAC
 - CI baseline: unit tests, chart lint, image inventory check, container smoke test
 
 ## Planned
 
 Not built yet; see the [roadmap](#roadmap).
 
-- Least-privilege RBAC for whoever deploys
 - Built-in admission policies (ValidatingAdmissionPolicy) for what PSA can't express, such as a read-only root filesystem
 - CI security gates: secrets scan, SAST, dependency audit, image scan + SBOM, IaC scan
 - An air-gap simulation: every image mirrored by digest into a local registry, no public egress
@@ -34,7 +34,7 @@ Requires Docker, Python 3.12+ and curl on linux/amd64 (the pinned tool checksums
 
 ```bash
 make up              # kind cluster (1 control plane, 2 workers) + local registry
-make deploy          # build, push, apply platform resources, helm upgrade --install (image pinned by digest)
+make deploy          # build, push, apply platform resources, helm upgrade --install as the deployer (image pinned by digest)
 make test-security   # prove the controls on the live cluster (PASS/FAIL per check)
 ```
 
@@ -45,7 +45,7 @@ make help            # list all targets
 make test            # unit tests (python -m pytest) in a local venv
 make smoke           # run the image read-only / non-root / no capabilities in Docker and check it serves
 make lint            # helm lint the chart
-make platform        # apply platform resources only (namespaces with Pod Security labels, NetworkPolicies)
+make platform        # apply platform resources only, as admin (namespaces with Pod Security labels, NetworkPolicies, deployer RBAC, app Secret)
 make images          # regenerate images.txt and check every pinned digest against its registry
 make clean-test-pods # delete pods left behind by a killed security test run
 make down            # delete the cluster and the registry
@@ -57,7 +57,7 @@ curl localhost:8080/
 
 Port-forward works under default-deny because it doesn't arrive through the pod network. In-cluster traffic is limited to the `test-client` pod in namespace `client`.
 
-The cluster's kubeconfig is kept in the repo (`.kube/config`, gitignored), never merged into `~/.kube/config`, so make targets and tests can't act on another cluster by accident.
+The cluster's kubeconfig is kept in the repo (`.kube/config`, gitignored), never merged into `~/.kube/config`, so make targets and tests can't act on another cluster by accident. It is cluster-admin and is used for the cluster, platform resources and tests. Helm itself runs with `.kube/deployer`, which `make deploy` writes with a fresh 10-minute token for the deployer ServiceAccount ([ADR 0009](docs/adr/0009-deployer-rbac.md)).
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`, calling the same targets: `test`, `lint`, `images` (plus a check that the committed `images.txt` is current) and `smoke`. Actions are pinned by commit SHA and the workflow token is read-only. The security gates (secrets scan, SAST, image and IaC scans, e2e) are Phase 7.
 
@@ -78,7 +78,10 @@ Each control below lists how it is verified. Where a control can be enforced, th
 | Hardened pod spec: non-root, RuntimeDefault seccomp, no privilege escalation, drop ALL capabilities, read-only root filesystem | Container breakout and privilege escalation from a compromised app | [charts/app/templates/deployment.yaml](charts/app/templates/deployment.yaml) | `test_psa.sh`: running app pods meet `restricted`. PSA doesn't check the read-only root filesystem: it is set in the chart and exercised by `make smoke`, but nothing enforces it at admission |
 | Pod Security Admission `restricted` (enforce pinned to v1.37; warn and audit at latest) on namespace `app`. This kind cluster has no API audit log, so `audit` records go nowhere here; `enforce` and `warn` are what take effect | Privileged, root or host-access pods scheduled into the app namespace, by mistake or by someone with deploy rights | [platform/namespaces.yaml](platform/namespaces.yaml), [ADR 0006](docs/adr/0006-psa-versions.md) | `test_psa.sh`: a privileged, a root, a hostPath and a hostNetwork pod are rejected with the PSA reason; the same pod without the violation is admitted |
 | Dedicated ServiceAccount: no token mounted, no RoleBindings | A compromised app uses its token against the Kubernetes API | [serviceaccount.yaml](charts/app/templates/serviceaccount.yaml), [deployment.yaml](charts/app/templates/deployment.yaml) | `test_deploy.sh`: no token volume; `can-i` denies list pods, get secrets, create pods |
-| App Secret created outside Helm, from stdin, mounted as a read-only directory | Secret kept in Helm's release history, shell history or an apply annotation | [Makefile](Makefile) (`make deploy`), [ADR 0005](docs/adr/0005-secret-outside-chart.md) | `test_deploy.sh`: the decoded release record doesn't contain the value; app serves its fingerprint, never the value |
+| App Secret created outside Helm, from stdin, mounted as a read-only directory | Secret kept in Helm's release history, shell history or an apply annotation | [Makefile](Makefile) (`make platform`), [ADR 0005](docs/adr/0005-secret-outside-chart.md) | `test_deploy.sh`: the decoded release record doesn't contain the value; app serves its fingerprint, never the value |
+| Deployer limited to the app's own objects in `app`: Deployments, Services, ServiceAccounts, ConfigMaps; read-only Pods and ReplicaSets | Whoever deploys reads Secrets, opens a shell in a pod, removes NetworkPolicies, weakens Pod Security labels or grants itself more access | [platform/rbac/deployer.yaml](platform/rbac/deployer.yaml), [ADR 0009](docs/adr/0009-deployer-rbac.md) | `test_rbac.sh`: `can-i` allows what Helm needs and denies Secrets, `exec`/`attach`/`portforward`/`log`, token minting, NetworkPolicies, RBAC, namespaces and other namespaces; reading the app Secret, deleting the default-deny policy, binding `admin`, relabelling the namespace and minting a token are each rejected as forbidden, after succeeding as admin. With `edit` bound instead, 13 checks fail (checked when added) |
+| Deployer tokens from the TokenRequest API, 10 minutes, no Secret-based token; ServiceAccount in a namespace where nothing runs | A leaked deployer credential stays valid; a pod running as the deployer | [cluster/deployer-kubeconfig.sh](cluster/deployer-kubeconfig.sh), [platform/namespaces.yaml](platform/namespaces.yaml) | `test_rbac.sh`: the token authenticates as the deployer and expires after 600 s; no token Secret exists in namespace `deploy` |
+| Helm release record in ConfigMaps (`HELM_DRIVER=configmap`) | The deployer needs Secret access only because of where Helm stores its state, and could then read the app Secret | [Makefile](Makefile), [ADR 0009](docs/adr/0009-deployer-rbac.md) | `make deploy` installs, upgrades and waits as the deployer; `helm rollback` works with the same rights (checked when added); `test_deploy.sh` reads the deployed release from its ConfigMap |
 | NetworkPolicy-enforcing CNI | Policies accepted but silently not enforced | [cluster/kind-config.yaml](cluster/kind-config.yaml), [ADR 0002](docs/adr/0002-cni.md) | `test_netpol.sh`: blocked traffic times out, and controls show the same destinations answer for a pod with no policy |
 | Default-deny ingress and egress for every pod in namespace `app`, including DNS | Lateral movement to the app; a compromised app reaching other services or exfiltrating data | [platform/networkpolicies/networkpolicy-app.yaml](platform/networkpolicies/networkpolicy-app.yaml), [ADR 0007](docs/adr/0007-network-policies.md) | `test_netpol.sh`: a pod in `app` can't reach the API server by IP or by name; no egress rules exist in the namespace; app pods stay Ready |
 | Ingress only from `test-client` pods in namespace `client`, TCP 8080 only | Any other workload in the cluster calling the app | [platform/networkpolicies/networkpolicy-app.yaml](platform/networkpolicies/networkpolicy-app.yaml) | `test_netpol.sh`: the allowed pod connects; another port, an unlabelled pod in `client` and a pod in another namespace are all blocked |
@@ -87,11 +90,11 @@ Each control below lists how it is verified. Where a control can be enforced, th
 
 ```
 app/                Flask service, tests, Dockerfile
-cluster/            kind cluster config, local registry setup
+cluster/            kind cluster config, local registry setup, deployer kubeconfig
 charts/app/         Helm chart for the service
 policies/kyverno/   planned: Kyverno policies and PolicyExceptions
 policies/tests/     planned: Kyverno CLI test cases (offline)
-platform/           namespaces (PSA labels), NetworkPolicies; planned: RBAC
+platform/           namespaces (PSA labels), NetworkPolicies, deployer RBAC
 airgap/             image inventory script (images.txt), later the mirror script and offline notes
 images.txt          generated: every third-party image, pinned by digest
 tests/security/     scripts that prove controls are enforced on a live cluster
@@ -109,7 +112,7 @@ docs/adr/           architecture decision records
 | 3 | Pod Security Admission | done |
 | 4 | Network Policies | done |
 | 5 | Kyverno policy-as-code | stretch goal |
-| 6 | RBAC and least privilege | |
+| 6 | RBAC and least privilege | done |
 | 6a | Native admission policies (ValidatingAdmissionPolicy) | |
 | 7 | CI pipeline with security gates | |
 | 8 | Air-gap simulation | |
@@ -130,6 +133,7 @@ Architecture decision records live in [docs/adr/](docs/adr/).
 - [0006: Pod Security Admission: pinned enforce, latest warn/audit, namespace owned by the platform](docs/adr/0006-psa-versions.md)
 - [0007: NetworkPolicies: platform-owned, no egress, standard API only](docs/adr/0007-network-policies.md)
 - [0008: Native Kubernetes controls first; in-cluster add-ons are stretch goals](docs/adr/0008-native-controls-first.md)
+- [0009: Deployer RBAC: a namespaced Role, short-lived tokens, no Secrets](docs/adr/0009-deployer-rbac.md)
 
 ## License
 

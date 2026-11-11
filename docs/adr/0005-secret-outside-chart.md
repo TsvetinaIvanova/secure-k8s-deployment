@@ -9,7 +9,7 @@ The app reads its secret from a mounted Kubernetes Secret. The obvious approach 
 
 ## Decision
 
-The chart only *references* the Secret by name (`secret.name`) and mounts it. It does not create it. `make deploy` creates `app-secret` once, if it does not exist yet:
+The chart only *references* the Secret by name (`secret.name`) and mounts it. It does not create it. `make platform` (run by `make deploy`) creates `app-secret` once, as admin, since the deployer has no access to Secrets (ADR 0009), if it does not exist yet:
 
 - with a random 32-byte value piped through stdin (`--from-file=token=/dev/stdin`), so the value is never in process arguments, shell history or a file on disk;
 - with `kubectl create`, not `kubectl apply`, because client-side apply stores a full copy of the object in the `last-applied-configuration` annotation.
@@ -25,6 +25,6 @@ Later redeploys keep the existing value. Rotation is a separate operation (Phase
 ## Consequences
 
 - Verified: the decoded Helm release record contains the image digest but not the secret value.
-- Phase 10 replaces the `make deploy` step with Vault / External Secrets Operator creating the same Secret. The chart doesn't change.
+- Phase 10 replaces the `make platform` step with Vault / External Secrets Operator creating the same Secret. The chart doesn't change.
 - If the Secret is missing, the pods start but stay not-ready (`/readyz` returns 503), so the rollout times out instead of serving without a secret.
 - This departs from the plan's "chart with a Secret": the chart has a Secret *mount*, not a Secret *object*.
