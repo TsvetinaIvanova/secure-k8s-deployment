@@ -74,6 +74,13 @@ expect_forbidden() {
   if ! out=$(k "$@" 2>&1); then
     fail "$desc: control request failed as admin: $out"; return
   fi
+  deployer_forbidden "$desc" "$@"
+}
+
+# The deployer half on its own, for requests that can't be sent as admin without side effects.
+# Usage: deployer_forbidden <description> <kubectl args...>
+deployer_forbidden() {
+  local desc=$1 out; shift
   # On success the output isn't printed: it can be a Secret or a token.
   if out=$(d "$@" 2>&1); then
     fail "$desc: allowed, want forbidden"
@@ -90,6 +97,14 @@ expect_forbidden "bind admin to itself in app" -n $NS create rolebinding rbac-te
   --serviceaccount=deploy:app-deployer --dry-run=server
 expect_forbidden "relabel namespace app to privileged" label ns $NS pod-security.kubernetes.io/enforce=privileged \
   --overwrite --dry-run=server
-expect_forbidden "mint a token for the app ServiceAccount" -n $NS create token app --duration=10m
+# `create token` has no --dry-run: sent as admin it would issue a real token. The control checks
+# instead that the ServiceAccount exists and admin may mint for it; RBAC rejects the deployer's
+# request before any token is issued.
+if [[ $(k -n $NS auth can-i create serviceaccounts --subresource token) == yes ]] \
+   && k -n $NS get serviceaccount app -o name >/dev/null 2>&1; then
+  deployer_forbidden "mint a token for the app ServiceAccount" -n $NS create token app --duration=10m
+else
+  fail "mint a token for the app ServiceAccount: control failed (ServiceAccount app missing or admin can't mint)"
+fi
 
 exit $FAILED
