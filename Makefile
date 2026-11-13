@@ -21,7 +21,8 @@ IMAGE_DIGEST_CMD := docker buildx imagetools inspect $(IMAGE_REF) --format '{{.M
 # so make targets and test scripts can't act on whatever cluster is the current context.
 export KUBECONFIG := $(CURDIR)/.kube/config
 # Helm runs as the deployer ServiceAccount, with a 10-minute token written here by
-# `make deploy` (ADR 0009). The admin kubeconfig above is for the cluster, platform and tests.
+# `make deploy` and deleted when Helm exits (ADR 0009). The admin kubeconfig above is for the
+# cluster, platform and tests.
 DEPLOYER_KUBECONFIG := $(CURDIR)/.kube/deployer
 # Helm's release record goes into ConfigMaps, so the deployer needs no access to Secrets (ADR 0009).
 export HELM_DRIVER := configmap
@@ -95,8 +96,9 @@ down: $(KIND) ## Delete the local kind cluster and local registry
 	rm -f $(KUBECONFIG) $(DEPLOYER_KUBECONFIG)
 
 .PHONY: kubeconfig
-kubeconfig: tools ## Print the export line for kubectl by hand; use: eval "$$(make -s kubeconfig)"
-	@echo "export KUBECONFIG=$(KUBECONFIG) PATH=$(BIN):\$$PATH"
+kubeconfig: tools ## Print the export line for kubectl and helm by hand; use: eval "$$(make -s kubeconfig)"
+	@# HELM_DRIVER too: without it, helm by hand reads the Secret driver and finds no release.
+	@echo "export KUBECONFIG=$(KUBECONFIG) HELM_DRIVER=$(HELM_DRIVER) PATH=$(BIN):\$$PATH"
 
 .PHONY: build
 build: ## Build the app container image
@@ -130,10 +132,12 @@ platform: $(KUBECTL) ## Apply platform resources as admin: namespaces (Pod Secur
 deploy: load $(HELM) platform ## Push the image, apply platform resources, helm upgrade --install as the deployer ServiceAccount
 	./cluster/deployer-kubeconfig.sh $(KUBECTL) $(DEPLOYER_KUBECONFIG)
 	@# --wait=watcher: Helm 4 doesn't wait by default. No --rollback-on-failure, so a failed
-	@# rollout stays in place for kubectl describe/logs.
+	@# rollout stays in place for kubectl describe/logs. The deployer kubeconfig is deleted
+	@# whether Helm succeeds or fails, so no live token stays on disk.
 	KUBECONFIG=$(DEPLOYER_KUBECONFIG) $(HELM) upgrade --install app charts/app --namespace $(NAMESPACE) \
 		--set image.registry=$(REGISTRY) --set image.digest=$$($(IMAGE_DIGEST_CMD)) \
-		--wait=watcher --timeout 2m
+		--wait=watcher --timeout 2m; \
+		rc=$$?; rm -f $(DEPLOYER_KUBECONFIG); exit $$rc
 	$(KUBECTL) -n $(NAMESPACE) get pods -o wide
 
 .PHONY: lint
