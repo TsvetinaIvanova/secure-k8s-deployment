@@ -1,0 +1,84 @@
+# Built-in admission policies (ValidatingAdmissionPolicy, no add-on) for what Pod Security
+# Admission can't express (ADR 0010). Cluster-scoped, so only the platform can change them:
+# the deployer's Role is namespaced and grants nothing here. Applied by `make platform`.
+#
+# Workloads and pods: every container and init container must have a read-only root
+# filesystem, CPU and memory limits, and an image pinned by digest. The pod templates of
+# Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs and CronJobs are checked too, so a
+# bad Deployment is rejected itself instead of being accepted and failing later at pod
+# creation (the gap ADR 0006 notes for PSA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: app-workloads
+spec:
+  # A CEL error or a missing binding target rejects the request instead of skipping the check.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, replicasets, statefulsets, daemonsets]
+      - apiGroups: [batch]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [jobs, cronjobs]
+  variables:
+    - name: podSpec
+      expression: >-
+        object.kind == 'Pod' ? object.spec :
+        object.kind == 'CronJob' ? object.spec.jobTemplate.spec.template.spec :
+        object.spec.template.spec
+    # Ephemeral (debug) containers are added through the pods/ephemeralcontainers subresource,
+    # which this policy doesn't match; see ADR 0010.
+    - name: containers
+      expression: >-
+        variables.podSpec.containers + variables.podSpec.?initContainers.orValue([])
+    - name: writableRoot
+      expression: >-
+        variables.containers.filter(c,
+          !c.?securityContext.?readOnlyRootFilesystem.orValue(false)).map(c, c.name)
+    - name: noLimits
+      expression: >-
+        variables.containers.filter(c,
+          !c.?resources.?limits.?cpu.hasValue() || !c.?resources.?limits.?memory.hasValue()).map(c, c.name)
+    - name: unpinned
+      expression: >-
+        variables.containers.filter(c, !c.image.matches('@sha256:[0-9a-f]{64}$')).map(c, c.name)
+  validations:
+    - expression: size(variables.writableRoot) == 0
+      messageExpression: >-
+        'securityContext.readOnlyRootFilesystem must be true; not set in container(s): ' +
+        variables.writableRoot.join(', ')
+      reason: Forbidden
+    - expression: size(variables.noLimits) == 0
+      messageExpression: >-
+        'resources.limits.cpu and resources.limits.memory are required; missing in container(s): ' +
+        variables.noLimits.join(', ')
+      reason: Forbidden
+    - expression: size(variables.unpinned) == 0
+      messageExpression: >-
+        'image must be pinned by digest (name@sha256:...); not pinned in container(s): ' +
+        variables.unpinned.join(', ')
+      reason: Forbidden
+
+---
+# Where the policy applies. The API server resets kubernetes.io/metadata.name to the
+# namespace's name on every write, so relabelling can't move a namespace in or out of scope.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: app-workloads
+spec:
+  policyName: app-workloads
+  # Deny only: this kind cluster has no API audit log for Audit to write to (ADR 0006).
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: app

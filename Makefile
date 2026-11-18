@@ -115,8 +115,10 @@ load: build ## Build the image and push it to the local registry; prints the pin
 	@echo "pinned: $(IMAGE_REF)@$$($(IMAGE_DIGEST_CMD))"
 
 .PHONY: platform
-platform: $(KUBECTL) ## Apply platform resources as admin: namespaces (Pod Security labels), network policies, deployer RBAC, app Secret
+platform: $(KUBECTL) ## Apply platform resources as admin: namespaces (Pod Security labels), admission policies, network policies, deployer RBAC, app Secret
 	$(KUBECTL) apply -f platform/namespaces.yaml
+	@# Before anything is deployed: the policies only check objects created or updated after them (ADR 0010).
+	$(KUBECTL) apply -f platform/admission/
 	$(KUBECTL) apply -f platform/networkpolicies/
 	$(KUBECTL) apply -f platform/rbac/
 	@# The Secret lives outside the chart (ADR 0005), and the deployer can't touch Secrets

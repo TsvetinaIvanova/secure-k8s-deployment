@@ -1,0 +1,41 @@
+# Services in namespace app: ClusterIP only, no externalIPs (ADR 0010).
+#
+# The deployer has full control of Services in app (ADR 0009), and RBAC can't restrict
+# Service fields. Without this policy it could:
+#   - set spec.externalIPs (CVE-2020-8554): kube-proxy on every node then sends traffic for
+#     that address to the app, from pods in any namespace;
+#   - open a NodePort or LoadBalancer, exposing the app outside the cluster;
+#   - create an ExternalName Service, a DNS alias to any host.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: app-services
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [services]
+  validations:
+    # The API server defaults spec.type to ClusterIP before admission, so it is always set here.
+    - expression: object.spec.type == 'ClusterIP'
+      messageExpression: "'spec.type must be ClusterIP, got ' + object.spec.type"
+      reason: Forbidden
+    - expression: size(object.spec.?externalIPs.orValue([])) == 0
+      message: spec.externalIPs is not allowed (CVE-2020-8554)
+      reason: Forbidden
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: app-services
+spec:
+  policyName: app-services
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: app

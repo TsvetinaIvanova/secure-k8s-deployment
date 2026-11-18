@@ -10,7 +10,8 @@ echo "== test_psa: namespace $NS"
 labels=$(k get ns $NS -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}:{.metadata.labels.pod-security\.kubernetes\.io/enforce-version}')
 [[ $labels == restricted:v1.37 ]] && pass "namespace enforces restricted:v1.37" || fail "namespace enforce label is '$labels', want restricted:v1.37"
 
-# The app's own image, so a later registry or tag policy (Phase 5) can't be what rejects these pods.
+# The app's own image, pinned by digest, and every container read-only with limits, so the
+# admission policies of Phase 6a (ADR 0010) can't be what rejects these pods.
 IMAGE=$(k -n $NS get deploy app -o jsonpath='{.spec.template.spec.containers[0].image}')
 
 # Usage: pod <name> <pod securityContext> <container securityContext> [extra container fields] [pod volumes]
@@ -32,7 +33,7 @@ ${5:-}
 EOF
 }
 POD_SC='{runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}'
-CTR_SC='{allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}'
+CTR_SC='{allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, readOnlyRootFilesystem: true}'
 
 if out=$(pod compliant "$POD_SC" "$CTR_SC" | k apply --dry-run=server -f - 2>&1); then
   pass "compliant pod admitted"
@@ -56,7 +57,7 @@ expect_rejected() {
 # allowPrivilegeEscalation is left out: privileged implies it, and setting it false next
 # to privileged: true fails API validation before admission ever runs.
 expect_rejected "privileged container" \
-  "$(pod privileged "$POD_SC" '{capabilities: {drop: [ALL]}, privileged: true}')"
+  "$(pod privileged "$POD_SC" '{capabilities: {drop: [ALL]}, readOnlyRootFilesystem: true, privileged: true}')"
 expect_rejected "root user (runAsUser 0, runAsNonRoot unset)" \
   "$(pod root '{runAsUser: 0, seccompProfile: {type: RuntimeDefault}}' "$CTR_SC")"
 expect_rejected "hostPath volume" \
