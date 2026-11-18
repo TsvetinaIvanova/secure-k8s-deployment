@@ -15,7 +15,7 @@ APP_LABELS='app.kubernetes.io/name=app,app.kubernetes.io/instance=app'
 TEST_PODS=("$CLIENT_NS allowed" "$CLIENT_NS unlabelled" "$OUTSIDE_NS outsider" "$NS probe")
 
 POD_SC='{runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}'
-CTR_SC='{allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}'
+CTR_SC='{allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, readOnlyRootFilesystem: true}'
 
 # Usage: test_pod <namespace> <name> [labels, e.g. "a: b"]
 test_pod() {

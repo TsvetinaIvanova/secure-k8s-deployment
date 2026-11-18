@@ -2,7 +2,7 @@
 
 A deliberately small Python web service deployed to a local Kubernetes cluster, with the effort going into the platform around it: how the service is built, shipped, constrained and verified. The focus is platform security for regulated and disconnected (air-gapped) environments.
 
-**Status:** in progress. Phases 0 to 4 and 6 are done: scaffold, hardened container, a Helm deployment to a local kind cluster, Pod Security Admission at `restricted`, default-deny NetworkPolicies, and least-privilege RBAC for the identity that deploys. Phases that add external tooling to the cluster (Kyverno, Vault, Loki and Grafana, cosign `verifyImages`) are stretch goals until the security measures that apply to a clean Kubernetes cluster are covered ([ADR 0008](docs/adr/0008-native-controls-first.md)). Today, nothing beyond PSA's fixed rules is enforced at admission; Phase 6a is planned to close that gap with built-in admission policies.
+**Status:** in progress. Phases 0 to 4, 6 and 6a are done: scaffold, hardened container, a Helm deployment to a local kind cluster, Pod Security Admission at `restricted`, default-deny NetworkPolicies, least-privilege RBAC for the identity that deploys, and built-in admission policies for what Pod Security Admission can't check. Phases that add external tooling to the cluster (Kyverno, Vault, Loki and Grafana, cosign `verifyImages`) are stretch goals until the security measures that apply to a clean Kubernetes cluster are covered ([ADR 0008](docs/adr/0008-native-controls-first.md)). Admission checks beyond PSA use ValidatingAdmissionPolicy, which is built into Kubernetes ([ADR 0010](docs/adr/0010-admission-policies.md)).
 
 ## Implemented
 
@@ -11,15 +11,15 @@ A deliberately small Python web service deployed to a local Kubernetes cluster, 
 - Pod Security Admission (`restricted`) and default-deny NetworkPolicies with no egress
 - An app ServiceAccount with no token mounted and no permissions
 - Helm runs as a deployer ServiceAccount limited to the app's own objects, with 10-minute tokens: no Secrets, no `exec`, no changes to NetworkPolicies or RBAC
+- Built-in admission policies (ValidatingAdmissionPolicy) in `app`: read-only root filesystem, CPU and memory limits, and images pinned by digest for every workload, checked on the Deployment itself; Services only as ClusterIP, with no `externalIPs`
 - CI baseline: unit tests, chart lint, image inventory check, container smoke test
 
 ## Planned
 
 Not built yet; see the [roadmap](#roadmap).
 
-- Built-in admission policies (ValidatingAdmissionPolicy) for what PSA can't express, such as a read-only root filesystem
 - CI security gates: secrets scan, SAST, dependency audit, image scan + SBOM, IaC scan
-- An air-gap simulation: every image mirrored by digest into a local registry, no public egress
+- An air-gap simulation: every image mirrored by digest into a local registry, no public egress, and an admission rule that allows only that registry
 
 Stretch goals, because they add external tooling to the cluster:
 
@@ -45,7 +45,7 @@ make help            # list all targets
 make test            # unit tests (python -m pytest) in a local venv
 make smoke           # run the image read-only / non-root / no capabilities in Docker and check it serves
 make lint            # helm lint the chart
-make platform        # apply platform resources only, as admin (namespaces with Pod Security labels, NetworkPolicies, deployer RBAC, app Secret)
+make platform        # apply platform resources only, as admin (namespaces with Pod Security labels, admission policies, NetworkPolicies, deployer RBAC, app Secret)
 make images          # regenerate images.txt and check every pinned digest against its registry
 make clean-test-pods # delete pods left behind by a killed security test run
 make down            # delete the cluster and the registry
@@ -75,13 +75,15 @@ Each control below lists how it is verified. Where a control can be enforced, th
 | Cluster tools at pinned versions, verified against SHA-256 hashes stored in the repo | Tampered or swapped download of kind, kubectl or Helm | [Makefile](Makefile) (`make tools`) | A wrong hash stops the install (checked when added); CI downloads and verifies Helm on every run |
 | Repo-local kubeconfig | Make targets or security tests running against the wrong cluster | [Makefile](Makefile) (`KUBECONFIG`) | Plain `kubectl` without it cannot reach the cluster |
 | App image pinned by digest, served from a local registry | Running different bytes than were built; a moved tag | [charts/app/values.schema.json](charts/app/values.schema.json), [ADR 0003](docs/adr/0003-local-registry.md) | Schema rejects a missing digest or `latest`; `test_deploy.sh`: all pods reference a digest; a wrong digest fails with `ErrImagePull` (checked when added) |
-| Hardened pod spec: non-root, RuntimeDefault seccomp, no privilege escalation, drop ALL capabilities, read-only root filesystem | Container breakout and privilege escalation from a compromised app | [charts/app/templates/deployment.yaml](charts/app/templates/deployment.yaml) | `test_psa.sh`: running app pods meet `restricted`. PSA doesn't check the read-only root filesystem: it is set in the chart and exercised by `make smoke`, but nothing enforces it at admission |
+| Hardened pod spec: non-root, RuntimeDefault seccomp, no privilege escalation, drop ALL capabilities, read-only root filesystem | Container breakout and privilege escalation from a compromised app | [charts/app/templates/deployment.yaml](charts/app/templates/deployment.yaml) | `test_psa.sh`: running app pods meet `restricted`. PSA doesn't check the read-only root filesystem; the `app-workloads` policy below does |
 | Pod Security Admission `restricted` (enforce pinned to v1.37; warn and audit at latest) on namespace `app`. This kind cluster has no API audit log, so `audit` records go nowhere here; `enforce` and `warn` are what take effect | Privileged, root or host-access pods scheduled into the app namespace, by mistake or by someone with deploy rights | [platform/namespaces.yaml](platform/namespaces.yaml), [ADR 0006](docs/adr/0006-psa-versions.md) | `test_psa.sh`: a privileged, a root, a hostPath and a hostNetwork pod are rejected with the PSA reason; the same pod without the violation is admitted |
 | Dedicated ServiceAccount: no token mounted, no RoleBindings | A compromised app uses its token against the Kubernetes API | [serviceaccount.yaml](charts/app/templates/serviceaccount.yaml), [deployment.yaml](charts/app/templates/deployment.yaml) | `test_deploy.sh`: no token volume; `can-i` denies list pods, get secrets, create pods |
 | App Secret created outside Helm, from stdin, mounted as a read-only directory | Secret kept in Helm's release history, shell history or an apply annotation | [Makefile](Makefile) (`make platform`), [ADR 0005](docs/adr/0005-secret-outside-chart.md) | `test_deploy.sh`: the decoded release record doesn't contain the value; app serves its fingerprint, never the value |
-| Deployer limited to the app's own objects in `app`: Deployments, Services, ServiceAccounts, ConfigMaps; read-only Pods and ReplicaSets | Whoever deploys reads Secrets, opens a shell in a pod, removes NetworkPolicies, weakens Pod Security labels or grants itself more access | [platform/rbac/deployer.yaml](platform/rbac/deployer.yaml), [ADR 0009](docs/adr/0009-deployer-rbac.md) | `test_rbac.sh`: `can-i` allows what Helm needs and denies Secrets, `exec`/`attach`/`portforward`/`log`, token minting, NetworkPolicies, RBAC, namespaces and other namespaces; reading the app Secret, deleting the default-deny policy, binding `admin` and relabelling the namespace are each rejected as forbidden, after succeeding as admin; minting a token is rejected after admin's `can-i` confirms it would be allowed (sending it as admin would issue a real token). With `edit` bound instead, 13 checks fail (checked when added). Not covered: the deployer can still create Services with `externalIPs` or of type NodePort or LoadBalancer; blocking them at admission is planned for Phase 6a |
+| Deployer limited to the app's own objects in `app`: Deployments, Services, ServiceAccounts, ConfigMaps; read-only Pods and ReplicaSets | Whoever deploys reads Secrets, opens a shell in a pod, removes NetworkPolicies, weakens Pod Security labels or grants itself more access | [platform/rbac/deployer.yaml](platform/rbac/deployer.yaml), [ADR 0009](docs/adr/0009-deployer-rbac.md) | `test_rbac.sh`: `can-i` allows what Helm needs and denies Secrets, `exec`/`attach`/`portforward`/`log`, token minting, NetworkPolicies, RBAC, namespaces and other namespaces; reading the app Secret, deleting the default-deny policy, binding `admin` and relabelling the namespace are each rejected as forbidden, after succeeding as admin; minting a token is rejected after admin's `can-i` confirms it would be allowed (sending it as admin would issue a real token). With `edit` bound instead, 13 checks fail (checked when added). Services with `externalIPs` or of a type other than ClusterIP, which RBAC can't restrict, are rejected by the `app-services` policy below |
 | Deployer tokens from the TokenRequest API, 10 minutes, no Secret-based token, kubeconfig deleted when Helm exits; ServiceAccount in a namespace where nothing runs | A leaked deployer credential stays valid; a pod running as the deployer | [cluster/deployer-kubeconfig.sh](cluster/deployer-kubeconfig.sh), [Makefile](Makefile) (`make deploy`), [platform/namespaces.yaml](platform/namespaces.yaml) | `test_rbac.sh`: the token authenticates as the deployer and expires after 600 s; no token Secret exists in namespace `deploy`. `.kube/deployer` is gone after `make deploy` (checked when added) |
 | Helm release record in ConfigMaps (`HELM_DRIVER=configmap`) | The deployer needs Secret access only because of where Helm stores its state, and could then read the app Secret | [Makefile](Makefile), [ADR 0009](docs/adr/0009-deployer-rbac.md) | `make deploy` installs, upgrades and waits as the deployer; `helm rollback` works with the same rights (checked when added); `test_deploy.sh` reads the deployed release from its ConfigMap |
+| ValidatingAdmissionPolicy `app-workloads` in `app`: every container and init container has a read-only root filesystem, CPU and memory limits, and an image pinned by digest. Checked on Pods and on the pod templates of Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs and CronJobs, for every user including cluster-admin | A writable root filesystem, which PSA doesn't check; one pod starving the node; an image whose tag was moved; a bad Deployment accepted and failing only at pod creation (ADR 0006) | [platform/admission/app-workloads.yaml](platform/admission/app-workloads.yaml), [ADR 0010](docs/adr/0010-admission-policies.md) | `test_admission.sh`: a compliant Deployment, Pod and CronJob are admitted. Rejected, with the policy and rule named: a Deployment without `readOnlyRootFilesystem`, a writable init container, no memory limit, an image by tag only; a Pod (as admin) without `readOnlyRootFilesystem`; a CronJob with an image by tag only. The deployed Deployment passes as an update. With its binding deleted, 7 checks fail (checked when added). Not covered: debug containers (ADR 0010); the registry itself, until Phase 8 |
+| ValidatingAdmissionPolicy `app-services` in `app`: `type: ClusterIP`, no `externalIPs` | The deployer capturing cluster traffic with `externalIPs` (CVE-2020-8554), or exposing the app through NodePort, LoadBalancer or ExternalName | [platform/admission/app-services.yaml](platform/admission/app-services.yaml), [ADR 0010](docs/adr/0010-admission-policies.md) | `test_admission.sh`, with the deployer's token: a ClusterIP Service is admitted; NodePort, LoadBalancer, ExternalName and `externalIPs` are rejected by the policy. With its binding deleted, 4 rejections and the binding check fail (checked when added). The deployer can't delete or patch the policies or their bindings |
 | NetworkPolicy-enforcing CNI | Policies accepted but silently not enforced | [cluster/kind-config.yaml](cluster/kind-config.yaml), [ADR 0002](docs/adr/0002-cni.md) | `test_netpol.sh`: blocked traffic times out, and controls show the same destinations answer for a pod with no policy |
 | Default-deny ingress and egress for every pod in namespace `app`, including DNS | Lateral movement to the app; a compromised app reaching other services or exfiltrating data | [platform/networkpolicies/networkpolicy-app.yaml](platform/networkpolicies/networkpolicy-app.yaml), [ADR 0007](docs/adr/0007-network-policies.md) | `test_netpol.sh`: a pod in `app` can't reach the API server by IP or by name; no egress rules exist in the namespace; app pods stay Ready |
 | Ingress only from `test-client` pods in namespace `client`, TCP 8080 only | Any other workload in the cluster calling the app | [platform/networkpolicies/networkpolicy-app.yaml](platform/networkpolicies/networkpolicy-app.yaml) | `test_netpol.sh`: the allowed pod connects; another port, an unlabelled pod in `client` and a pod in another namespace are all blocked |
@@ -94,7 +96,7 @@ cluster/            kind cluster config, local registry setup, deployer kubeconf
 charts/app/         Helm chart for the service
 policies/kyverno/   planned: Kyverno policies and PolicyExceptions
 policies/tests/     planned: Kyverno CLI test cases (offline)
-platform/           namespaces (PSA labels), NetworkPolicies, deployer RBAC
+platform/           namespaces (PSA labels), admission policies, NetworkPolicies, deployer RBAC
 airgap/             image inventory script (images.txt), later the mirror script and offline notes
 images.txt          generated: every third-party image, pinned by digest
 tests/security/     scripts that prove controls are enforced on a live cluster
@@ -113,7 +115,7 @@ docs/adr/           architecture decision records
 | 4 | Network Policies | done |
 | 5 | Kyverno policy-as-code | stretch goal |
 | 6 | RBAC and least privilege | done |
-| 6a | Native admission policies (ValidatingAdmissionPolicy), including ClusterIP-only Services without `externalIPs` in `app` | |
+| 6a | Native admission policies (ValidatingAdmissionPolicy), including ClusterIP-only Services without `externalIPs` in `app` | done |
 | 7 | CI pipeline with security gates | |
 | 8 | Air-gap simulation | |
 | 9 | Documentation and architecture diagrams | |
@@ -134,6 +136,7 @@ Architecture decision records live in [docs/adr/](docs/adr/).
 - [0007: NetworkPolicies: platform-owned, no egress, standard API only](docs/adr/0007-network-policies.md)
 - [0008: Native Kubernetes controls first; in-cluster add-ons are stretch goals](docs/adr/0008-native-controls-first.md)
 - [0009: Deployer RBAC: a namespaced Role, short-lived tokens, no Secrets](docs/adr/0009-deployer-rbac.md)
+- [0010: Built-in admission policies for what PSA can't express](docs/adr/0010-admission-policies.md)
 
 ## License
 
