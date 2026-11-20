@@ -1,0 +1,5 @@
+# Data for Trivy's KSV-0125 check: images may only come from these registries.
+# The scan check only; admission enforcement of the registry comes in Phase 8.
+ksv0125:
+  trusted_registries:
+    - localhost:5001

@@ -8,7 +8,7 @@ COPY requirements.txt /build/requirements.txt
 RUN pip install --no-cache-dir --only-binary=:all: --target /deps -r /build/requirements.txt
 
 # Runtime stage: distroless, no shell or package manager. See docs/adr/0001-base-image.md.
-FROM gcr.io/distroless/python3-debian13:nonroot@sha256:64e54c4b1200da244d80181d98e86fc01d73c8101f107d5baf472152d8e119a2
+FROM gcr.io/distroless/python3-debian13:nonroot@sha256:6c4cb3bfa4b555429dd19541796a6ba6b30c84675b460bd0bd5072f7d5bdae71
 
 # Code and dependencies stay owned by root, so the app user cannot modify them.
 COPY --from=build /deps /deps

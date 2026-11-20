@@ -1,6 +1,7 @@
-# Baseline CI: unit tests, chart lint, image inventory, hardened-container smoke test.
-# Jobs call the same make targets as a local run, so CI and a laptop check the same things.
-# The security gates (secrets scan, SAST, image/IaC scan, e2e) come in Phase 7.
+# CI: unit tests, chart lint, image inventory, the security gates, and the live security
+# tests on a throwaway kind cluster. Jobs call the same make targets as a local run, so CI
+# and a laptop check the same things. Scanners are downloaded by make at pinned versions and
+# checked against hashes in the repo, not run through third-party actions (ADR 0011).
 name: ci
 
 on:
@@ -8,7 +9,8 @@ on:
   push:
     branches: [main]
 
-# Read-only token by default; no job writes to the repo, packages or PRs.
+# Read-only token by default; no job writes to the repo, packages, PRs or code scanning.
+# The SBOM goes out as a workflow artifact, which needs no extra permission.
 permissions:
   contents: read
 
@@ -51,7 +53,40 @@ jobs:
       - run: make images
       - run: git diff --exit-code images.txt
 
-  smoke:
+  secrets-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0               # full history: a secret deleted in a later commit still counts
+      - run: make secrets-scan
+
+  sast-deps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      # Bandit and pip-audit install from tools/scan-requirements.txt with --require-hashes.
+      - run: make sast
+      - run: make deps-audit
+
+  iac-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: make scan-iac
+
+  image:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -60,3 +95,46 @@ jobs:
           persist-credentials: false
       # Builds the image and runs it read-only, non-root, with no capabilities.
       - run: make smoke
+      # SBOM before the scan, and uploaded even if the scan fails: it's what you triage with.
+      - run: make sbom
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          retention-days: 30
+          if-no-files-found: error
+      - run: make scan-image
+
+  # Proves the gates above still reject bad input: a gate that silently stops failing would
+  # otherwise look the same as a clean repo.
+  gate-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - run: make test-gates
+
+  # The controls proven on a live cluster on every PR: kind cluster, platform resources,
+  # Helm install as the deployer, then every tests/security check.
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: make up
+      - run: make deploy
+      - run: make test-security
+      # Diagnostics only on failure; the runner, cluster included, is thrown away after.
+      - if: failure()
+        run: |
+          eval "$(make -s kubeconfig)"
+          kubectl get pods -A -o wide
+          kubectl get events -A --sort-by=.lastTimestamp | tail -50

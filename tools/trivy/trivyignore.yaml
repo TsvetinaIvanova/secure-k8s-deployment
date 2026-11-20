@@ -1,0 +1,35 @@
+# Accepted Trivy findings. Each entry is scoped to the file it applies to, says why it is
+# accepted and what covers the risk instead, and expires, so it is re-reviewed rather
+# than forgotten. An expired entry stops matching and the gate fails again (ADR 0011).
+misconfigurations:
+  - id: KSV-0056
+    paths: ["platform/rbac/deployer.yaml"]
+    statement: >-
+      The deployer must create the app's Service. The interception risk (externalIPs,
+      NodePort, LoadBalancer, ExternalName) is closed by the app-services admission
+      policy, proven by test_admission.sh (ADR 0009, ADR 0010).
+    expired_at: 2027-05-20
+  - id: KSV-0048
+    paths: ["platform/rbac/deployer.yaml"]
+    statement: >-
+      The deployer must create and update the app's Deployment. What the pods may do is
+      limited by PSA restricted and the app-workloads policy, not by RBAC (ADR 0009).
+    expired_at: 2027-05-20
+  - id: KSV-0049
+    paths: ["platform/rbac/deployer.yaml"]
+    statement: >-
+      The deployer must manage the app's ConfigMap and Helm's release ConfigMaps
+      (HELM_DRIVER=configmap, so it needs no Secret access). Secrets stay out of reach.
+    expired_at: 2027-05-20
+  - id: KSV-0110
+    paths: ["app-chart.yaml"]
+    statement: >-
+      The chart leaves metadata.namespace to Helm (--namespace app). The deployer's Role
+      exists only in namespace app, so it can't install the chart anywhere else.
+    expired_at: 2027-05-20
+  - id: DS-0026
+    paths: ["app/Dockerfile"]
+    statement: >-
+      Kubernetes ignores Docker HEALTHCHECK; liveness and readiness probes in the chart
+      call /healthz and /readyz. Distroless has no shell or curl to run one anyway.
+    expired_at: 2027-05-20

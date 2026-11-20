@@ -38,10 +38,17 @@ KUBECTL_VERSION := v1.37.1
 KUBECTL_SHA256  := 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
 HELM_VERSION    := v4.3.1
 HELM_SHA256     := 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
+GITLEAKS_VERSION := v8.30.1
+GITLEAKS_SHA256  := 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+# Downloaded and hash-checked here, not through aquasecurity/trivy-action (ADR 0011).
+TRIVY_VERSION    := v0.76.2
+TRIVY_SHA256     := bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
 # Versioned file names: bumping a version makes make download the new binary.
 KIND    := $(BIN)/kind-$(KIND_VERSION)
 KUBECTL := $(BIN)/kubectl-$(KUBECTL_VERSION)
 HELM    := $(BIN)/helm-$(HELM_VERSION)
+GITLEAKS := $(BIN)/gitleaks-$(GITLEAKS_VERSION)
+TRIVY    := $(BIN)/trivy-$(TRIVY_VERSION)
 
 # Targets not implemented yet fail loudly instead of pretending to succeed.
 define todo
@@ -75,6 +82,18 @@ $(HELM): $(BIN)/.platform-ok
 	curl -fsSLo $@.tgz.tmp https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz
 	echo "$(HELM_SHA256)  $@.tgz.tmp" | sha256sum -c --quiet
 	tar -xzOf $@.tgz.tmp linux-amd64/helm >$@.tmp && rm $@.tgz.tmp
+	chmod +x $@.tmp && mv $@.tmp $@
+
+$(GITLEAKS): $(BIN)/.platform-ok
+	curl -fsSLo $@.tgz.tmp https://github.com/gitleaks/gitleaks/releases/download/$(GITLEAKS_VERSION)/gitleaks_$(GITLEAKS_VERSION:v%=%)_linux_x64.tar.gz
+	echo "$(GITLEAKS_SHA256)  $@.tgz.tmp" | sha256sum -c --quiet
+	tar -xzOf $@.tgz.tmp gitleaks >$@.tmp && rm $@.tgz.tmp
+	chmod +x $@.tmp && mv $@.tmp $@
+
+$(TRIVY): $(BIN)/.platform-ok
+	curl -fsSLo $@.tgz.tmp https://github.com/aquasecurity/trivy/releases/download/$(TRIVY_VERSION)/trivy_$(TRIVY_VERSION:v%=%)_Linux-64bit.tar.gz
+	echo "$(TRIVY_SHA256)  $@.tgz.tmp" | sha256sum -c --quiet
+	tar -xzOf $@.tgz.tmp trivy >$@.tmp && rm $@.tgz.tmp
 	chmod +x $@.tmp && mv $@.tmp $@
 
 .PHONY: up
@@ -171,9 +190,91 @@ clean-test-pods: $(KUBECTL) ## Delete pods left behind by a killed security test
 policy-test: ## Run Kyverno CLI tests offline (no cluster needed)
 	$(call todo,Phase 5)
 
+# --- CI security gates (Phase 7, ADR 0011) -------------------------------------------
+# Every gate fails the build on a finding. Accepted findings live in one reviewed place
+# each: `# nosec <id>` with a reason for Bandit, tools/trivy/trivyignore.yaml (scoped to a
+# file, with a reason and an expiry) for Trivy. The inputs are variables so
+# tests/gates/test_gates.sh can run these same targets against planted bad inputs.
+SCAN_VENV         := .venv-scan
+PIP_TOOLS_VERSION := 7.6.2
+SECRETS_REPO ?= .
+SAST_SRC     ?= app/src
+AUDIT_REQS   ?= app/requirements.txt
+SCAN_IMAGE   ?= $(IMAGE):$(IMAGE_TAG)
+IAC_DIR      ?= .
+TRIVY_IGNORE ?= tools/trivy/trivyignore.yaml
+SBOM         ?= sbom.cdx.json
+# Scratch space, gitignored, overwritten on each run. Trivy's vulnerability DB lives here
+# too rather than in ~/.cache.
+CACHE        := $(CURDIR)/.cache
+TRIVY_COMMON := --cache-dir $(CACHE)/trivy --quiet
+TRIVY_GATE   := $(TRIVY_COMMON) --exit-code 1 --ignorefile $(TRIVY_IGNORE)
+
+# --require-hashes: pip refuses any file whose hash isn't in the lock.
+$(SCAN_VENV)/.installed: tools/scan-requirements.txt
+	python3 -m venv $(SCAN_VENV)
+	$(SCAN_VENV)/bin/pip install -q --require-hashes --only-binary=:all: -r tools/scan-requirements.txt
+	touch $@
+
+.PHONY: scan-lock
+scan-lock: ## Re-lock tools/scan-requirements.txt (Bandit, pip-audit) with hashes
+	@# pip-tools only writes the lock; the lock is what gets reviewed in the diff.
+	python3 -m venv $(CACHE)/pip-tools
+	$(CACHE)/pip-tools/bin/pip install -q pip-tools==$(PIP_TOOLS_VERSION)
+	$(CACHE)/pip-tools/bin/pip-compile -q --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url \
+		-o tools/scan-requirements.txt tools/scan-requirements.in
+
+.PHONY: secrets-scan
+secrets-scan: $(GITLEAKS) ## Gate: gitleaks over the full git history (a secret deleted later still fails)
+	$(GITLEAKS) git --no-banner --redact --verbose $(SECRETS_REPO)
+
+.PHONY: secrets-staged
+secrets-staged: $(GITLEAKS) ## Scan only the staged changes for secrets (what the pre-commit hook runs)
+	$(GITLEAKS) git --pre-commit --staged --no-banner --redact --verbose $(SECRETS_REPO)
+
+.PHONY: hooks
+hooks: $(GITLEAKS) ## Install the repo's git hooks (pre-commit secrets scan) for this clone
+	git config core.hooksPath tools/hooks
+	@echo "pre-commit secrets scan enabled (git config core.hooksPath tools/hooks)"
+
+.PHONY: sast
+sast: $(SCAN_VENV)/.installed ## Gate: Bandit over the app source; any finding fails
+	$(SCAN_VENV)/bin/bandit -r $(SAST_SRC)
+
+.PHONY: deps-audit
+deps-audit: $(SCAN_VENV)/.installed ## Gate: pip-audit of the pinned runtime requirements; any known vulnerability fails
+	@# --no-deps: the file pins every transitive dependency, so it is audited exactly as
+	@# written. The image scan separately checks what was actually installed.
+	$(SCAN_VENV)/bin/pip-audit -r $(AUDIT_REQS) --no-deps --disable-pip --progress-spinner off
+
+.PHONY: scan-image
+scan-image: build $(TRIVY) ## Gate: Trivy image scan; fails on a fixable HIGH/CRITICAL vulnerability or an embedded secret
+	$(TRIVY) image $(TRIVY_GATE) --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed $(SCAN_IMAGE)
+
+.PHONY: sbom
+sbom: build $(TRIVY) ## Write a CycloneDX SBOM of the app image to sbom.cdx.json
+	$(TRIVY) image $(TRIVY_COMMON) --format cyclonedx --output $(SBOM) $(SCAN_IMAGE)
+	@echo "wrote $(SBOM)"
+
+.PHONY: scan-iac
+scan-iac: $(TRIVY) $(HELM) ## Gate: Trivy misconfiguration scan of the rendered chart, platform manifests, Dockerfile; any finding fails
+	@# The chart is scanned as the pinned Helm renders it (what the cluster receives), so
+	@# charts/ is skipped in the tree scan, along with third-party and generated dirs.
+	@mkdir -p $(CACHE)/rendered
+	$(HELM) template app charts/app --namespace $(NAMESPACE) -f charts/app/ci/lint-values.yaml >$(CACHE)/rendered/app-chart.yaml
+	@# Both scans always run, so a finding in the chart doesn't hide one in platform/.
+	rc=0; \
+	$(TRIVY) config $(TRIVY_GATE) --config-data tools/trivy/data $(CACHE)/rendered || rc=1; \
+	$(TRIVY) config $(TRIVY_GATE) --config-data tools/trivy/data \
+		--skip-dirs charts,bin,.git,.cache,.kube,$(VENV),$(SCAN_VENV) $(IAC_DIR) || rc=1; \
+	exit $$rc
+
 .PHONY: scan
-scan: ## Scan the image and manifests (Trivy)
-	$(call todo,Phase 7)
+scan: secrets-scan sast deps-audit scan-image scan-iac ## Run every CI security gate (make -k scan shows all failures)
+
+.PHONY: test-gates
+test-gates: ## Prove each gate rejects a planted bad input and passes on this repo (PASS/FAIL per check)
+	./tests/gates/test_gates.sh
 
 .PHONY: images
 images: $(HELM) ## Write images.txt: every third-party image, pinned by digest and checked against its registry

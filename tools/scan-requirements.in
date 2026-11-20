@@ -1,0 +1,4 @@
+# Python security scanners (SAST, dependency audit). Pinned here, locked with hashes in
+# scan-requirements.txt by `make scan-lock`; never installed into the app image.
+bandit==1.9.4
+pip-audit==2.10.1
