@@ -10,7 +10,7 @@ import os
 
 from flask import Flask, jsonify
 
-DEFAULT_SECRET_FILE = "/etc/app/secret/token"
+DEFAULT_SECRET_FILE = "/etc/app/secret/token"  # nosec B105  # a file path, not a credential
 
 
 def read_secret(path):

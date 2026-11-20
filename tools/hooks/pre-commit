@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Blocks a commit whose staged changes contain a secret, before it enters history.
+# Installed with `make hooks` (core.hooksPath). Uses the same pinned, hash-checked gitleaks
+# as CI via `make secrets-staged`. A convenience, not the control: `git commit --no-verify`
+# skips it, and the CI secrets scan over the full history is what blocks a merge.
+#
+# Git runs hooks from the top of the repo being committed, so $PWD is that repo; the
+# Makefile is found relative to this script.
+set -euo pipefail
+exec make -s -C "$(cd "$(dirname "$0")/../.." && pwd)" secrets-staged SECRETS_REPO="$PWD"

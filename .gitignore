@@ -39,3 +39,7 @@ trivy-*.json
 
 # Pinned CLI tools (make tools)
 bin/
+
+# Security scanners: their venv, Trivy's DB cache, rendered chart, pip-tools venv
+.venv-scan/
+.cache/
