@@ -1,6 +1,6 @@
 # 0008: Native Kubernetes controls first; in-cluster add-ons are stretch goals
 
-- **Status:** accepted
+- **Status:** superseded by [0012](0012-add-ons-before-air-gap.md)
 - **Date:** 2026-11-05
 
 ## Context
