@@ -1,0 +1,52 @@
+# Kyverno policy (ADR 0013): every new namespace gets a default-deny NetworkPolicy for ingress
+# and egress, the same one platform/networkpolicies/ sets in app (ADR 0007). Without it a new
+# namespace starts with all traffic allowed, until someone remembers to add a policy.
+#
+# Synchronized: if the generated policy is deleted or edited, Kyverno puts it back. Workloads
+# in the namespace get traffic by adding allow policies next to it, never by removing it.
+#
+# Only namespaces created after Kyverno is installed: client and deploy already exist and are
+# covered by ADR 0007 and ADR 0009. Exemptions are PolicyExceptions in namespace kyverno.
+apiVersion: policies.kyverno.io/v1
+kind: GeneratingPolicy
+metadata:
+  name: namespace-default-deny
+spec:
+  evaluation:
+    synchronize:
+      enabled: true
+  matchConstraints:
+    resourceRules:
+      # UPDATE as well as CREATE: with synchronize on, Kyverno re-evaluates the trigger on every
+      # update, and an update the policy doesn't match counts as "no longer matches", which
+      # deletes the generated policy. With CREATE alone, adding any label to a namespace
+      # silently removed its default-deny (found while building, tested in test_kyverno.sh).
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [namespaces]
+  matchConditions:
+    - name: not-cluster-owned
+      expression: >-
+        !(object.metadata.name in ['default', 'kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'])
+  variables:
+    - name: ns
+      expression: object.metadata.name
+    - name: downstream
+      expression: >-
+        [
+          {
+            "apiVersion": dyn("networking.k8s.io/v1"),
+            "kind": dyn("NetworkPolicy"),
+            "metadata": dyn({
+              "name": "default-deny-all",
+              "namespace": string(variables.ns)
+            }),
+            "spec": dyn({
+              "podSelector": dyn({}),
+              "policyTypes": ["Ingress", "Egress"]
+            })
+          }
+        ]
+  generate:
+    - expression: generator.Apply(variables.ns, variables.downstream)

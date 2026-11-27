@@ -6,11 +6,12 @@
 # Fails if any image is not pinned by digest, or (unless --offline) if a pinned digest
 # doesn't exist in its registry.
 #
-# Usage: list-images.sh <helm binary> [--offline]
+# Usage: list-images.sh <helm binary> <kyverno chart .tgz> [--offline]
 set -euo pipefail
 
 HELM=${1:?helm binary}
-OFFLINE=${2:-}
+KYVERNO_CHART=${2:?kyverno chart}
+OFFLINE=${3:-}
 APP_REPO=secure-k8s-app   # built in this repo, see the note in the header below
 OUT=images.txt
 
@@ -35,6 +36,10 @@ collect() {
   "$HELM" template app charts/app -f charts/app/ci/lint-values.yaml \
     | sed -n 's/^ *image: *//p' | tr -d '"' | grep -v "/$APP_REPO:" \
     | sed 's/^/charts\/app (rendered)|/' || true
+  # Every image the Kyverno chart can run, hook Jobs and test pods included, as configured.
+  "$HELM" template kyverno "$KYVERNO_CHART" --namespace kyverno -f platform/kyverno/values.yaml \
+    | sed -n 's/^ *image: *\([^ ].*\)$/\1/p' | tr -d '"' \
+    | sed 's/^/platform\/kyverno\/values.yaml (rendered chart)|/'
 }
 
 failed=0

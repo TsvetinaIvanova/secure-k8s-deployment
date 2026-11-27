@@ -1,0 +1,76 @@
+# Each bad object differs from the good one of its kind in one image only.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: good-deployment, namespace: app}
+spec:
+  selector: {matchLabels: {app: x}}
+  template:
+    metadata: {labels: {app: x}}
+    spec:
+      initContainers: [{name: init, image: "localhost:5001/secure-k8s-app:0.1.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]
+      containers: [{name: app, image: "localhost:5001/secure-k8s-app:0.1.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: public-image-deployment, namespace: app}
+spec:
+  selector: {matchLabels: {app: x}}
+  template:
+    metadata: {labels: {app: x}}
+    spec:
+      initContainers: [{name: init, image: "localhost:5001/secure-k8s-app:0.1.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]
+      containers: [{name: app, image: "docker.io/curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93"}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: public-init-deployment, namespace: app}
+spec:
+  selector: {matchLabels: {app: x}}
+  template:
+    metadata: {labels: {app: x}}
+    spec:
+      initContainers: [{name: init, image: "docker.io/curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93"}]
+      containers: [{name: app, image: "localhost:5001/secure-k8s-app:0.1.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]
+---
+# A registry name that only starts like the local one.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: lookalike-registry-deployment, namespace: app}
+spec:
+  selector: {matchLabels: {app: x}}
+  template:
+    metadata: {labels: {app: x}}
+    spec:
+      containers: [{name: app, image: "localhost:5001.evil.example/secure-k8s-app@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: public-image-cronjob, namespace: app}
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers: [{name: job, image: "docker.io/curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93"}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: good-pod, namespace: app}
+spec:
+  containers: [{name: app, image: "localhost:5001/secure-k8s-app:0.1.0@sha256:1111111111111111111111111111111111111111111111111111111111111111"}]
+---
+# The NetworkPolicy test's probe, exactly as test_netpol.sh creates it: covered by the exception.
+apiVersion: v1
+kind: Pod
+metadata: {name: netpol-test-probe, namespace: app, labels: {security-test: netpol}}
+spec:
+  containers: [{name: curl, image: "docker.io/curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93"}]
+---
+# The same probe with the curl image by tag only: the exception pins the digest.
+apiVersion: v1
+kind: Pod
+metadata: {name: netpol-test-probe-by-tag, namespace: app, labels: {security-test: netpol}}
+spec:
+  containers: [{name: curl, image: "docker.io/curlimages/curl:8.23.0"}]

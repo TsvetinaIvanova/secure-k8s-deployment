@@ -1,0 +1,63 @@
+# Kyverno policy (ADR 0013): in namespace app, every container and init container image comes
+# from the local registry, localhost:5001. This is the registry allowlist that ADR 0010 left
+# open. Digest pinning (app-workloads, ADR 0010) fixes an image's bytes; this fixes where it
+# comes from.
+#
+# Like app-workloads, it checks Pods and the pod templates of every workload kind, so a bad
+# Deployment is rejected itself instead of only its pods.
+#
+# The one exception, the NetworkPolicy test's curl probe, is a PolicyException in namespace
+# kyverno: policies/kyverno/exception-netpol-probe.yaml.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: app-image-registry
+spec:
+  validationActions: [Deny]
+  # Fail closed: if Kyverno can't answer (down, timed out), the API server rejects the request
+  # instead of admitting it unchecked. The webhook excludes kube-system and kyverno, so
+  # Kyverno can always be repaired (ADR 0013; tested in test_kyverno.sh).
+  failurePolicy: Fail
+  # Kyverno's own variants for Deployments etc. aren't needed: the podSpec variable below
+  # covers every kind, the same way platform/admission/app-workloads.yaml does.
+  autogen:
+    podControllers:
+      controllers: []
+  evaluation:
+    # Background scans report on what already runs, in PolicyReports.
+    background:
+      enabled: true
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: app
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, replicasets, statefulsets, daemonsets]
+      - apiGroups: [batch]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [jobs, cronjobs]
+  variables:
+    - name: podSpec
+      expression: >-
+        object.kind == 'Pod' ? object.spec :
+        object.kind == 'CronJob' ? object.spec.jobTemplate.spec.template.spec :
+        object.spec.template.spec
+    - name: outside
+      expression: >-
+        (variables.podSpec.containers + variables.podSpec.?initContainers.orValue([]))
+          .filter(c, !c.image.startsWith('localhost:5001/'))
+          .map(c, c.name + ' (' + c.image + ')')
+  validations:
+    - expression: size(variables.outside) == 0
+      messageExpression: >-
+        'images in namespace app must come from localhost:5001/; not in container(s): ' +
+        variables.outside.join(', ')
+      reason: Forbidden

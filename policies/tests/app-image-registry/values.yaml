@@ -1,0 +1,9 @@
+# Namespace labels the CLI uses to evaluate the policy's namespaceSelector offline.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Value
+metadata:
+  name: values
+namespaceSelector:
+  - name: app
+    labels:
+      kubernetes.io/metadata.name: app

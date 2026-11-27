@@ -105,6 +105,17 @@ jobs:
           if-no-files-found: error
       - run: make scan-image
 
+  # Kyverno policies tested offline with the pinned Kyverno CLI: each policy against resources
+  # it must admit, reject, mutate or generate for, exceptions included. No cluster needed.
+  policy-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: make policy-test
+
   # Proves the gates above still reject bad input: a gate that silently stops failing would
   # otherwise look the same as a clean repo.
   gate-tests:
@@ -120,8 +131,9 @@ jobs:
           python-version: "3.13"
       - run: make test-gates
 
-  # The controls proven on a live cluster on every PR: kind cluster, platform resources,
-  # Helm install as the deployer, then every tests/security check.
+  # The controls proven on a live cluster on every PR: kind cluster, platform resources
+  # (Kyverno and its policies included), Helm install as the deployer, then every
+  # tests/security check.
   e2e:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -138,3 +150,5 @@ jobs:
           eval "$(make -s kubeconfig)"
           kubectl get pods -A -o wide
           kubectl get events -A --sort-by=.lastTimestamp | tail -50
+          kubectl get validatingpolicies,mutatingpolicies,generatingpolicies -o wide || true
+          kubectl -n kyverno logs deploy/kyverno-admission-controller --tail=100 || true

@@ -43,12 +43,20 @@ GITLEAKS_SHA256  := 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f24
 # Downloaded and hash-checked here, not through aquasecurity/trivy-action (ADR 0011).
 TRIVY_VERSION    := v0.76.2
 TRIVY_SHA256     := bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+# Kyverno: the CLI for offline policy tests, and the Helm chart, downloaded as a file and
+# hash-checked like the binaries rather than pulled from a chart repository at install time.
+KYVERNO_VERSION       := v1.20.0
+KYVERNO_SHA256        := 06b8f3ca7b5626473be8fb4d343ad54ab84e317142766f72420e7d44b80942e2
+KYVERNO_CHART_VERSION := 3.10.0
+KYVERNO_CHART_SHA256  := 55961392dc0821eb367323f0e9585c061dd4407ef7ada921bd56ea1642c2a301
 # Versioned file names: bumping a version makes make download the new binary.
 KIND    := $(BIN)/kind-$(KIND_VERSION)
 KUBECTL := $(BIN)/kubectl-$(KUBECTL_VERSION)
 HELM    := $(BIN)/helm-$(HELM_VERSION)
 GITLEAKS := $(BIN)/gitleaks-$(GITLEAKS_VERSION)
 TRIVY    := $(BIN)/trivy-$(TRIVY_VERSION)
+KYVERNO  := $(BIN)/kyverno-$(KYVERNO_VERSION)
+KYVERNO_CHART := $(BIN)/kyverno-chart-$(KYVERNO_CHART_VERSION).tgz
 
 # Targets not implemented yet fail loudly instead of pretending to succeed.
 define todo
@@ -96,6 +104,17 @@ $(TRIVY): $(BIN)/.platform-ok
 	tar -xzOf $@.tgz.tmp trivy >$@.tmp && rm $@.tgz.tmp
 	chmod +x $@.tmp && mv $@.tmp $@
 
+$(KYVERNO): $(BIN)/.platform-ok
+	curl -fsSLo $@.tgz.tmp https://github.com/kyverno/kyverno/releases/download/$(KYVERNO_VERSION)/kyverno-cli_$(KYVERNO_VERSION)_linux_x86_64.tar.gz
+	echo "$(KYVERNO_SHA256)  $@.tgz.tmp" | sha256sum -c --quiet
+	tar -xzOf $@.tgz.tmp kyverno >$@.tmp && rm $@.tgz.tmp
+	chmod +x $@.tmp && mv $@.tmp $@
+
+$(KYVERNO_CHART): $(BIN)/.platform-ok
+	curl -fsSLo $@.tmp https://kyverno.github.io/kyverno/kyverno-$(KYVERNO_CHART_VERSION).tgz
+	echo "$(KYVERNO_CHART_SHA256)  $@.tmp" | sha256sum -c --quiet
+	mv $@.tmp $@
+
 .PHONY: up
 up: $(KIND) $(KUBECTL) ## Create the local kind cluster (1 control plane, 2 workers) and local registry
 	@if $(KIND) get clusters | grep -qx $(CLUSTER_NAME); then \
@@ -134,7 +153,7 @@ load: build ## Build the image and push it to the local registry; prints the pin
 	@echo "pinned: $(IMAGE_REF)@$$($(IMAGE_DIGEST_CMD))"
 
 .PHONY: platform
-platform: $(KUBECTL) ## Apply platform resources as admin: namespaces (Pod Security labels), admission policies, network policies, deployer RBAC, app Secret
+platform: $(KUBECTL) policies ## Apply platform resources as admin: namespaces (Pod Security labels), Kyverno and its policies, admission policies, network policies, deployer RBAC, app Secret
 	$(KUBECTL) apply -f platform/namespaces.yaml
 	@# Before anything is deployed: the policies only check objects created or updated after them (ADR 0010).
 	$(KUBECTL) apply -f platform/admission/
@@ -148,6 +167,21 @@ platform: $(KUBECTL) ## Apply platform resources as admin: namespaces (Pod Secur
 	@$(KUBECTL) -n $(NAMESPACE) get secret app-secret >/dev/null 2>&1 || { \
 		head -c 32 /dev/urandom | base64 | tr -d '\n' | \
 		$(KUBECTL) -n $(NAMESPACE) create secret generic app-secret --from-file=token=/dev/stdin; }
+
+.PHONY: kyverno
+kyverno: $(KUBECTL) $(HELM) $(KYVERNO_CHART) ## Install or upgrade Kyverno as admin, into namespace kyverno (ADR 0013)
+	@# The namespace comes from platform/namespaces.yaml (Pod Security labels), not --create-namespace.
+	$(KUBECTL) apply -f platform/namespaces.yaml
+	$(HELM) upgrade --install kyverno $(KYVERNO_CHART) --namespace kyverno \
+		-f platform/kyverno/values.yaml --wait=watcher --timeout 10m
+
+.PHONY: policies
+policies: $(KUBECTL) kyverno ## Apply the Kyverno policies and exceptions in policies/kyverno, as admin, and wait until they are ready
+	$(KUBECTL) apply -f policies/kyverno/
+	@# A policy is enforced only once Kyverno has compiled it and registered its webhook, which
+	@# it reports as status.conditionStatus.ready (a field, not a condition).
+	$(KUBECTL) wait --for=jsonpath='{.status.conditionStatus.ready}'=true --timeout=60s \
+		validatingpolicies.policies.kyverno.io,mutatingpolicies.policies.kyverno.io,generatingpolicies.policies.kyverno.io --all
 
 .PHONY: deploy
 deploy: load $(HELM) platform ## Push the image, apply platform resources, helm upgrade --install as the deployer ServiceAccount
@@ -187,8 +221,9 @@ clean-test-pods: $(KUBECTL) ## Delete pods left behind by a killed security test
 	$(KUBECTL) delete pods -A -l security-test --ignore-not-found
 
 .PHONY: policy-test
-policy-test: ## Run Kyverno CLI tests offline (no cluster needed)
-	$(call todo,Phase 5)
+policy-test: $(KYVERNO) ## Run the Kyverno policy tests offline with the Kyverno CLI (no cluster needed)
+	@# --warnings-as-errors: a deprecated policy kind or field fails the test instead of a warning.
+	$(KYVERNO) test policies/tests --remove-color --warnings-as-errors
 
 # --- CI security gates (Phase 7, ADR 0011) -------------------------------------------
 # Every gate fails the build on a finding. Accepted findings live in one reviewed place
@@ -263,10 +298,12 @@ scan-iac: $(TRIVY) $(HELM) ## Gate: Trivy misconfiguration scan of the rendered 
 	@mkdir -p $(CACHE)/rendered
 	$(HELM) template app charts/app --namespace $(NAMESPACE) -f charts/app/ci/lint-values.yaml >$(CACHE)/rendered/app-chart.yaml
 	@# Both scans always run, so a finding in the chart doesn't hide one in platform/.
+	@# policies/tests holds Kyverno test fixtures that break rules on purpose (public images,
+	@# minimal pod specs); make policy-test checks they're rejected. policies/kyverno is scanned.
 	rc=0; \
 	$(TRIVY) config $(TRIVY_GATE) --config-data tools/trivy/data $(CACHE)/rendered || rc=1; \
 	$(TRIVY) config $(TRIVY_GATE) --config-data tools/trivy/data \
-		--skip-dirs charts,bin,.git,.cache,.kube,$(VENV),$(SCAN_VENV) $(IAC_DIR) || rc=1; \
+		--skip-dirs charts,bin,.git,.cache,.kube,$(VENV),$(SCAN_VENV),policies/tests $(IAC_DIR) || rc=1; \
 	exit $$rc
 
 .PHONY: scan
@@ -277,8 +314,8 @@ test-gates: ## Prove each gate rejects a planted bad input and passes on this re
 	./tests/gates/test_gates.sh
 
 .PHONY: images
-images: $(HELM) ## Write images.txt: every third-party image, pinned by digest and checked against its registry
-	./airgap/list-images.sh $(HELM)
+images: $(HELM) $(KYVERNO_CHART) ## Write images.txt: every third-party image, pinned by digest and checked against its registry
+	./airgap/list-images.sh $(HELM) $(KYVERNO_CHART)
 
 .PHONY: mirror
 mirror: ## Copy images.txt into the local registry by digest and verify
