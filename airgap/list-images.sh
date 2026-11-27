@@ -8,6 +8,9 @@
 #
 # Usage: list-images.sh <helm binary> <kyverno chart .tgz> [--offline]
 set -euo pipefail
+# Byte-order sort, so images.txt is identical on every machine (en_US and C.UTF-8
+# collate "kyverno:" and "kyvernopre:" differently, which made CI's diff fail).
+export LC_ALL=C
 
 HELM=${1:?helm binary}
 KYVERNO_CHART=${2:?kyverno chart}
