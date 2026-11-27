@@ -1,6 +1,6 @@
 # Secure Kubernetes Deployment
 
-Portfolio project: a trivial Flask service on a local kind cluster, with the depth in the platform (PSA, NetworkPolicy, RBAC, native admission policies, CI security gates, air-gap; Kyverno and Vault as stretch goals). Everything must be defensible in a review without notes. Be direct, flag tradeoffs honestly, push back if something doesn't fit.
+Portfolio project: a trivial Flask service on a local kind cluster, with the depth in the platform (PSA, NetworkPolicy, RBAC, native admission policies, CI security gates, then Kyverno, security observability, Vault and image signing; air-gap as a stretch goal). Everything must be defensible in a review without notes. Be direct, flag tradeoffs honestly, push back if something doesn't fit.
 
 ## Working rules
 
@@ -11,7 +11,7 @@ Portfolio project: a trivial Flask service on a local kind cluster, with the dep
 - Explain the root cause or reasoning before changing code; keep fixes targeted.
 - Non-obvious decisions get an ADR in `docs/adr/` (template `0000-template.md`), under a page each.
 - Every routine action is a `make` target.
-- Docs describe the project on its own merits (platform security, regulated and disconnected environments).
+- Docs describe the project on its own merits (platform security for regulated environments).
 - Never commit secrets, kubeconfigs or tokens.
 
 ## Conventions

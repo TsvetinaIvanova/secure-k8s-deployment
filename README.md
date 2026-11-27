@@ -1,8 +1,8 @@
 # Secure Kubernetes Deployment
 
-A deliberately small Python web service deployed to a local Kubernetes cluster, with the effort going into the platform around it: how the service is built, shipped, constrained and verified. The focus is platform security for regulated and disconnected (air-gapped) environments.
+A deliberately small Python web service deployed to a local Kubernetes cluster, with the effort going into the platform around it: how the service is built, shipped, constrained and verified. The focus is platform security for regulated environments: least privilege, admission controls that are enforced rather than advised, supply-chain checks in CI, and a test for every control that shows the bad request being rejected.
 
-**Status:** in progress. Phases 0 to 4, 6, 6a and 7 are done: scaffold, hardened container, a Helm deployment to a local kind cluster, Pod Security Admission at `restricted`, default-deny NetworkPolicies, least-privilege RBAC for the identity that deploys, built-in admission policies for what Pod Security Admission can't check, and CI security gates. Phases that add external tooling to the cluster (Kyverno, Vault, Loki and Grafana, cosign `verifyImages`) are stretch goals until the security measures that apply to a clean Kubernetes cluster are covered ([ADR 0008](docs/adr/0008-native-controls-first.md)). Admission checks beyond PSA use ValidatingAdmissionPolicy, which is built into Kubernetes ([ADR 0010](docs/adr/0010-admission-policies.md)).
+**Status:** in progress. Phases 0 to 4, 6, 6a and 7 are done: scaffold, hardened container, a Helm deployment to a local kind cluster, Pod Security Admission at `restricted`, default-deny NetworkPolicies, least-privilege RBAC for the identity that deploys, built-in admission policies for what Pod Security Admission can't check, and CI security gates. Next are the phases that add components to the cluster: Kyverno, security observability with Loki and Grafana, Vault, and image signing with cosign. The air-gap simulation is a stretch goal ([ADR 0012](docs/adr/0012-add-ons-before-air-gap.md)). Admission checks beyond PSA use ValidatingAdmissionPolicy, which is built into Kubernetes ([ADR 0010](docs/adr/0010-admission-policies.md)).
 
 ## Implemented
 
@@ -19,14 +19,14 @@ A deliberately small Python web service deployed to a local Kubernetes cluster, 
 
 Not built yet; see the [roadmap](#roadmap).
 
-- An air-gap simulation: every image mirrored by digest into a local registry, no public egress, and an admission rule that allows only that registry
-
-Stretch goals, because they add external tooling to the cluster:
-
 - Policy-as-code with Kyverno (validate, mutate, generate), including exceptions, policy reports, webhook failure modes and offline policy tests in CI
-- Secret delivery from Vault with rotation without a redeploy
 - Security observability with Loki and Grafana
+- Secret delivery from Vault with rotation without a redeploy
 - Image signing with cosign, verified by Kyverno `verifyImages`
+
+Stretch goal:
+
+- An air-gap simulation: every image mirrored by digest into a local registry, no public egress, and an admission rule that allows only that registry
 
 ## Quickstart
 
@@ -87,7 +87,7 @@ Each control below lists how it is verified. Where a control can be enforced, th
 | Deployer limited to the app's own objects in `app`: Deployments, Services, ServiceAccounts, ConfigMaps; read-only Pods and ReplicaSets | Whoever deploys reads Secrets, opens a shell in a pod, removes NetworkPolicies, weakens Pod Security labels or grants itself more access | [platform/rbac/deployer.yaml](platform/rbac/deployer.yaml), [ADR 0009](docs/adr/0009-deployer-rbac.md) | `test_rbac.sh`: `can-i` allows what Helm needs and denies Secrets, `exec`/`attach`/`portforward`/`log`, token minting, NetworkPolicies, RBAC, namespaces and other namespaces; reading the app Secret, deleting the default-deny policy, binding `admin` and relabelling the namespace are each rejected as forbidden, after succeeding as admin; minting a token is rejected after admin's `can-i` confirms it would be allowed (sending it as admin would issue a real token). With `edit` bound instead, 13 checks fail (checked when added). Services with `externalIPs` or of a type other than ClusterIP, which RBAC can't restrict, are rejected by the `app-services` policy below |
 | Deployer tokens from the TokenRequest API, 10 minutes, no Secret-based token, kubeconfig deleted when Helm exits; ServiceAccount in a namespace where nothing runs | A leaked deployer credential stays valid; a pod running as the deployer | [cluster/deployer-kubeconfig.sh](cluster/deployer-kubeconfig.sh), [Makefile](Makefile) (`make deploy`), [platform/namespaces.yaml](platform/namespaces.yaml) | `test_rbac.sh`: the token authenticates as the deployer and expires after 600 s; no token Secret exists in namespace `deploy`. `.kube/deployer` is gone after `make deploy` (checked when added) |
 | Helm release record in ConfigMaps (`HELM_DRIVER=configmap`) | The deployer needs Secret access only because of where Helm stores its state, and could then read the app Secret | [Makefile](Makefile), [ADR 0009](docs/adr/0009-deployer-rbac.md) | `make deploy` installs, upgrades and waits as the deployer; `helm rollback` works with the same rights (checked when added); `test_deploy.sh` reads the deployed release from its ConfigMap |
-| ValidatingAdmissionPolicy `app-workloads` in `app`: every container and init container has a read-only root filesystem, CPU and memory limits, and an image pinned by digest. Checked on Pods and on the pod templates of Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs and CronJobs, for every user including cluster-admin | A writable root filesystem, which PSA doesn't check; one pod starving the node; an image whose tag was moved; a bad Deployment accepted and failing only at pod creation (ADR 0006) | [platform/admission/app-workloads.yaml](platform/admission/app-workloads.yaml), [ADR 0010](docs/adr/0010-admission-policies.md) | `test_admission.sh`: a compliant Deployment, Pod and CronJob are admitted. Rejected, with the policy and rule named: a Deployment without `readOnlyRootFilesystem`, a writable init container, no memory limit, an image by tag only; a Pod (as admin) without `readOnlyRootFilesystem`; a CronJob with an image by tag only. The deployed Deployment passes as an update. With its binding deleted, 7 checks fail (checked when added). Not covered: debug containers (ADR 0010); the registry itself, until Phase 8 |
+| ValidatingAdmissionPolicy `app-workloads` in `app`: every container and init container has a read-only root filesystem, CPU and memory limits, and an image pinned by digest. Checked on Pods and on the pod templates of Deployments, ReplicaSets, StatefulSets, DaemonSets, Jobs and CronJobs, for every user including cluster-admin | A writable root filesystem, which PSA doesn't check; one pod starving the node; an image whose tag was moved; a bad Deployment accepted and failing only at pod creation (ADR 0006) | [platform/admission/app-workloads.yaml](platform/admission/app-workloads.yaml), [ADR 0010](docs/adr/0010-admission-policies.md) | `test_admission.sh`: a compliant Deployment, Pod and CronJob are admitted. Rejected, with the policy and rule named: a Deployment without `readOnlyRootFilesystem`, a writable init container, no memory limit, an image by tag only; a Pod (as admin) without `readOnlyRootFilesystem`; a CronJob with an image by tag only. The deployed Deployment passes as an update. With its binding deleted, 7 checks fail (checked when added). Not covered: debug containers (ADR 0010); the registry itself, which ADR 0010 left to the air-gap (Phase 8), now a stretch goal (ADR 0012) |
 | ValidatingAdmissionPolicy `app-services` in `app`: `type: ClusterIP`, no `externalIPs` | The deployer capturing cluster traffic with `externalIPs` (CVE-2020-8554), or exposing the app through NodePort, LoadBalancer or ExternalName | [platform/admission/app-services.yaml](platform/admission/app-services.yaml), [ADR 0010](docs/adr/0010-admission-policies.md) | `test_admission.sh`, with the deployer's token: a ClusterIP Service is admitted; NodePort, LoadBalancer, ExternalName and `externalIPs` are rejected by the policy. With its binding deleted, 4 rejections and the binding check fail (checked when added). The deployer can't delete or patch the policies or their bindings |
 | Secrets scan of the full git history (gitleaks), in CI on every PR; the same check on staged changes as a pre-commit hook (`make hooks`), which is opt-in and skippable with `--no-verify`, so CI is the control | A credential committed, including one deleted in a later commit but still in history | [Makefile](Makefile) (`make secrets-scan`, `make hooks`), [tools/hooks/pre-commit](tools/hooks/pre-commit), [ADR 0011](docs/adr/0011-ci-security-gates.md) | `test_gates.sh`: a GitHub-token-shaped string committed and then deleted is found (`github-pat`); this repo's history passes; with the hook, a commit with a staged token is blocked and nothing enters history, a clean commit goes through |
 | SAST of the app source (Bandit); any finding fails, exceptions are `# nosec <id>` with a reason on the line | Injection, unsafe deserialisation and similar flaws in the service code | [Makefile](Makefile) (`make sast`), [app/src/service.py](app/src/service.py) (one false positive: a file path flagged as a password) | `test_gates.sh`: a `shell=True` command built from input is rejected (`B602`); `app/src` passes |
@@ -107,7 +107,7 @@ charts/app/         Helm chart for the service
 policies/kyverno/   planned: Kyverno policies and PolicyExceptions
 policies/tests/     planned: Kyverno CLI test cases (offline)
 platform/           namespaces (PSA labels), admission policies, NetworkPolicies, deployer RBAC
-airgap/             image inventory script (images.txt), later the mirror script and offline notes
+airgap/             image inventory script (images.txt); the mirror script if the air-gap stretch goal is built
 images.txt          generated: every third-party image, pinned by digest
 tests/security/     scripts that prove controls are enforced on a live cluster
 tests/gates/        proves each CI security gate rejects planted bad input
@@ -125,15 +125,17 @@ docs/adr/           architecture decision records
 | 2 | Local cluster and Helm deployment | done |
 | 3 | Pod Security Admission | done |
 | 4 | Network Policies | done |
-| 5 | Kyverno policy-as-code | stretch goal |
 | 6 | RBAC and least privilege | done |
 | 6a | Native admission policies (ValidatingAdmissionPolicy), including ClusterIP-only Services without `externalIPs` in `app` | done |
 | 7 | CI pipeline with security gates | done |
-| 8 | Air-gap simulation | |
+| 5 | Kyverno policy-as-code | next |
+| 11 | Observability for security (Loki, Grafana) | |
+| 10 | Secrets with Vault and rotation | |
+| S1 | Image signing (cosign) and `verifyImages`; needs Phase 5 | |
 | 9 | Documentation and architecture diagrams | |
-| 10 | Secrets with Vault and rotation | stretch goal |
-| 11 | Observability for security (Loki, Grafana) | stretch goal |
-| S1 | Image signing (cosign) and `verifyImages`; needs Phase 5 | stretch goal |
+| 8 | Air-gap simulation | stretch goal |
+
+Rows are in build order. Phase numbers are identifiers and don't change when the order does, so references in ADRs and code stay valid ([ADR 0012](docs/adr/0012-add-ons-before-air-gap.md)).
 
 ## Decisions
 
@@ -146,10 +148,11 @@ Architecture decision records live in [docs/adr/](docs/adr/).
 - [0005: Keep the app Secret out of the Helm chart](docs/adr/0005-secret-outside-chart.md)
 - [0006: Pod Security Admission: pinned enforce, latest warn/audit, namespace owned by the platform](docs/adr/0006-psa-versions.md)
 - [0007: NetworkPolicies: platform-owned, no egress, standard API only](docs/adr/0007-network-policies.md)
-- [0008: Native Kubernetes controls first; in-cluster add-ons are stretch goals](docs/adr/0008-native-controls-first.md)
+- [0008: Native Kubernetes controls first; in-cluster add-ons are stretch goals](docs/adr/0008-native-controls-first.md) (superseded by 0012)
 - [0009: Deployer RBAC: a namespaced Role, short-lived tokens, no Secrets](docs/adr/0009-deployer-rbac.md)
 - [0010: Built-in admission policies for what PSA can't express](docs/adr/0010-admission-policies.md)
 - [0011: CI security gates: pinned scanners run by make, fail on findings, exceptions that expire](docs/adr/0011-ci-security-gates.md)
+- [0012: In-cluster add-ons before the air-gap; air-gap becomes a stretch goal](docs/adr/0012-add-ons-before-air-gap.md)
 
 ## License
 
