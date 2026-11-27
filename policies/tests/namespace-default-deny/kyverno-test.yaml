@@ -1,0 +1,14 @@
+# Offline tests (make policy-test) for namespace-default-deny and its exception.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: namespace-default-deny
+policies:
+  - ../../kyverno/namespace-default-deny.yaml
+exceptions:
+  - ../../kyverno/exception-platform-network.yaml
+resources:
+  - resources.yaml
+results:
+  - {isGeneratingPolicy: true, policy: namespace-default-deny, kind: Namespace, resources: [team-a], generatedResource: generated-team-a.yaml, result: pass}
+  - {isGeneratingPolicy: true, policy: namespace-default-deny, kind: Namespace, resources: [client], result: skip}

@@ -1,0 +1,17 @@
+# Offline tests (make policy-test) for namespace-pod-security-defaults (mutate) and
+# namespace-pod-security (validate). The CLI runs mutate before validate, as a CREATE does, so
+# team-a passes validate because of the labels mutate added. Removing a label from an existing
+# namespace (an UPDATE, which mutate doesn't match) is tested live in test_kyverno.sh.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: namespace-pod-security
+policies:
+  - ../../kyverno/namespace-pod-security.yaml
+resources:
+  - resources.yaml
+results:
+  - {isMutatingPolicy: true, policy: namespace-pod-security-defaults, kind: Namespace, resources: [team-a], patchedResources: patched-team-a.yaml, result: pass}
+  - {isMutatingPolicy: true, policy: namespace-pod-security-defaults, kind: Namespace, resources: [team-b], patchedResources: patched-team-b.yaml, result: pass}
+  - {isValidatingPolicy: true, policy: namespace-pod-security, kind: Namespace, resources: [team-a, team-b], result: pass}
+  - {isValidatingPolicy: true, policy: namespace-pod-security, kind: Namespace, resources: [privileged-ns, baseline-ns, old-version-ns], result: fail}

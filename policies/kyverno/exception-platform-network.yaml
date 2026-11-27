@@ -1,0 +1,23 @@
+# Exempts two platform namespaces from namespace-default-deny, which would otherwise generate
+# a default-deny NetworkPolicy in them on their next update (make platform re-applies them):
+#
+#  - app: the platform already sets default-deny and the one allow rule there
+#    (platform/networkpolicies/, ADR 0007). A generated policy with the same name would take
+#    that object over from the platform.
+#  - client: holds the test client, which must reach the app on 8080. ADR 0007 leaves this
+#    namespace without policies.
+#
+# deploy is not exempt: nothing runs there, so default-deny costs nothing.
+# Like every exception, it lives in namespace kyverno, where only admin can write.
+apiVersion: policies.kyverno.io/v1
+kind: PolicyException
+metadata:
+  name: platform-network
+  namespace: kyverno
+spec:
+  policyRefs:
+    - name: namespace-default-deny
+      kind: GeneratingPolicy
+  matchConditions:
+    - name: platform-namespaces
+      expression: object.kind == 'Namespace' && object.metadata.name in ['app', 'client']

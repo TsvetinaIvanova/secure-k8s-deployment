@@ -1,0 +1,107 @@
+# Kyverno policies (ADR 0013): every namespace runs Pod Security Admission at restricted.
+#
+# Without these, a new namespace has no Pod Security labels, and PSA admits anything in it,
+# privileged pods included. The platform's own namespaces set the labels themselves
+# (platform/namespaces.yaml, ADR 0006); these policies make it the default for every other
+# namespace and stop it from being weakened.
+#
+# Mutate fills in labels that are missing; validate rejects a namespace whose labels weaken
+# them. Mutating alone wouldn't enforce anything: a namespace created with enforce: privileged
+# would pass through unchanged.
+#
+# Not matched: namespaces that the cluster itself creates and kind needs unrestricted
+# (local-path-storage runs a hostPath helper pod). They exist before Kyverno, and kube-system,
+# kube-public and kube-node-lease are also outside Kyverno's webhook. Any other exemption is
+# a PolicyException in namespace kyverno.
+
+# Fill in missing Pod Security labels on a new namespace, with the same values as
+# platform/namespaces.yaml: enforce pinned to the cluster version, warn and audit at latest.
+# Labels that are already set are kept as they are, so validate can reject a weak one with a
+# clear message instead of it being silently overwritten.
+apiVersion: policies.kyverno.io/v1
+kind: MutatingPolicy
+metadata:
+  name: namespace-pod-security-defaults
+spec:
+  failurePolicy: Fail
+  evaluation:
+    # Admission only: changing labels on existing namespaces in the background would be a
+    # surprise. Those are covered by validate on their next update.
+    background:
+      enabled: false
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [namespaces]
+  matchConditions:
+    - name: not-cluster-owned
+      expression: >-
+        !(object.metadata.name in ['default', 'kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'])
+  variables:
+    - name: labels
+      expression: object.metadata.?labels.orValue({})
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: >-
+          Object{
+            metadata: Object.metadata{
+              labels: {
+                "pod-security.kubernetes.io/enforce":
+                  variables.labels[?"pod-security.kubernetes.io/enforce"].orValue("restricted"),
+                "pod-security.kubernetes.io/enforce-version":
+                  variables.labels[?"pod-security.kubernetes.io/enforce-version"].orValue("v1.37"),
+                "pod-security.kubernetes.io/warn":
+                  variables.labels[?"pod-security.kubernetes.io/warn"].orValue("restricted"),
+                "pod-security.kubernetes.io/warn-version":
+                  variables.labels[?"pod-security.kubernetes.io/warn-version"].orValue("latest"),
+                "pod-security.kubernetes.io/audit":
+                  variables.labels[?"pod-security.kubernetes.io/audit"].orValue("restricted"),
+                "pod-security.kubernetes.io/audit-version":
+                  variables.labels[?"pod-security.kubernetes.io/audit-version"].orValue("latest")
+              }
+            }
+          }
+
+---
+# Reject a namespace that doesn't enforce restricted, on create and on every update, so the
+# labels can't be weakened later either. enforce-version must be the pinned cluster version or
+# latest: an old version would enforce an older, weaker rule set.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: namespace-pod-security
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  evaluation:
+    background:
+      enabled: true
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [namespaces]
+  matchConditions:
+    - name: not-cluster-owned
+      expression: >-
+        !(object.metadata.name in ['default', 'kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'])
+  variables:
+    - name: labels
+      expression: object.metadata.?labels.orValue({})
+  validations:
+    - expression: >-
+        variables.labels[?"pod-security.kubernetes.io/enforce"].orValue("") == "restricted"
+      messageExpression: >-
+        'namespace ' + object.metadata.name + ' must set pod-security.kubernetes.io/enforce: restricted, got "' +
+        variables.labels[?"pod-security.kubernetes.io/enforce"].orValue("") + '"'
+      reason: Forbidden
+    - expression: >-
+        variables.labels[?"pod-security.kubernetes.io/enforce-version"].orValue("latest") in ["v1.37", "latest"]
+      messageExpression: >-
+        'namespace ' + object.metadata.name + ' must set pod-security.kubernetes.io/enforce-version to v1.37 or latest, got "' +
+        variables.labels[?"pod-security.kubernetes.io/enforce-version"].orValue("") + '"'
+      reason: Forbidden

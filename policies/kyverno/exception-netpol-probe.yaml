@@ -1,0 +1,29 @@
+# The only exception to app-image-registry: the curl probe that tests/security/test_netpol.sh
+# runs in namespace app to show default-deny egress from inside it (ADR 0007).
+#
+# Kyverno honours PolicyExceptions only in namespace kyverno (features.policyExceptions in
+# platform/kyverno/values.yaml), where only admin can write, so whoever deploys to app can't
+# exempt their own workloads.
+#
+# Kept as narrow as the test allows: a bare Pod (which the deployer can't create, ADR 0009),
+# with the probe's name and label, whose every container runs the curl image at the exact
+# digest the test pins (TEST_IMAGE in test_netpol.sh: change both together). A different
+# image, tag or digest gets no exception.
+apiVersion: policies.kyverno.io/v1
+kind: PolicyException
+metadata:
+  name: netpol-probe
+  namespace: kyverno
+spec:
+  policyRefs:
+    - name: app-image-registry
+      kind: ValidatingPolicy
+  matchConditions:
+    - name: netpol-probe-pod
+      expression: >-
+        object.kind == 'Pod' &&
+        object.metadata.namespace == 'app' &&
+        object.metadata.name == 'netpol-test-probe' &&
+        object.metadata.?labels[?'security-test'].orValue('') == 'netpol' &&
+        (object.spec.containers + object.spec.?initContainers.orValue([])).all(c,
+          c.image == 'docker.io/curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93')

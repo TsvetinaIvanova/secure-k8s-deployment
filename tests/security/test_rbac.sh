@@ -95,7 +95,10 @@ expect_forbidden "read the app Secret" -n $NS get secret app-secret -o name
 expect_forbidden "delete the default-deny NetworkPolicy" -n $NS delete networkpolicy default-deny-all --dry-run=server
 expect_forbidden "bind admin to itself in app" -n $NS create rolebinding rbac-test --clusterrole=admin \
   --serviceaccount=deploy:app-deployer --dry-run=server
-expect_forbidden "relabel namespace app to privileged" label ns $NS pod-security.kubernetes.io/enforce=privileged \
+# warn, not enforce: since Phase 5 the namespace-pod-security policy rejects a weaker enforce
+# level even from admin, so the admin control would fail. A weaker warn level passes Kyverno,
+# so only RBAC can stop the deployer here.
+expect_forbidden "relabel namespace app to warn at baseline" label ns $NS pod-security.kubernetes.io/warn=baseline \
   --overwrite --dry-run=server
 # `create token` has no --dry-run: sent as admin it would issue a real token. The control checks
 # instead that the ServiceAccount exists and admin may mint for it; RBAC rejects the deployer's

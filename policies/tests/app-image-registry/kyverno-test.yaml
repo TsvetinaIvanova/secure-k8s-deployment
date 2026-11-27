@@ -1,0 +1,19 @@
+# Offline tests (make policy-test) for app-image-registry and its one exception.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: app-image-registry
+policies:
+  - ../../kyverno/app-image-registry.yaml
+exceptions:
+  - ../../kyverno/exception-netpol-probe.yaml
+resources:
+  - resources.yaml
+variables: values.yaml
+results:
+  - {isValidatingPolicy: true, policy: app-image-registry, kind: Deployment, resources: [good-deployment], result: pass}
+  - {isValidatingPolicy: true, policy: app-image-registry, kind: Pod, resources: [good-pod], result: pass}
+  - {isValidatingPolicy: true, policy: app-image-registry, kind: Deployment, resources: [public-image-deployment, public-init-deployment, lookalike-registry-deployment], result: fail}
+  - {isValidatingPolicy: true, policy: app-image-registry, kind: CronJob, resources: [public-image-cronjob], result: fail}
+  - {isValidatingPolicy: true, policy: app-image-registry, kind: Pod, resources: [netpol-test-probe-by-tag], result: fail}
+  - {isValidatingPolicy: true, policy: app-image-registry, kind: Pod, resources: [netpol-test-probe], result: skip}

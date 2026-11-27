@@ -1,0 +1,49 @@
+# Values for the Kyverno Helm chart (chart 3.10.0, Kyverno v1.20.0), installed by the
+# platform as admin with `make kyverno`, never by the deployer (ADR 0013).
+#
+# Only what differs from the chart defaults is set here.
+
+# Every image pinned by digest. The chart joins registry/repository:tag, so the digest goes
+# into the tag. Digests checked with `make images`, which lists these in images.txt.
+upgrade:
+  legacyPolicyCheck:
+    # This hook Job refuses to install if legacy kyverno.io policies exist, which v1.20 no
+    # longer enforces. Its deadline counts from Job start, so the image pull is part of it:
+    # a cold pull of kyverno-cli took 1m41s against the default 120s.
+    activeDeadlineSeconds: 300
+    image:
+      tag: "v1.20.0@sha256:bd2b8b7c9d550ecf04e0bacaf351adce2f82ce67fd3f291075edcee7f8ab4ab4"
+crds:
+  migration:
+    image:
+      tag: "v1.20.0@sha256:bd2b8b7c9d550ecf04e0bacaf351adce2f82ce67fd3f291075edcee7f8ab4ab4"
+test:
+  image:
+    tag: "v1.20.0@sha256:6079a30d75fe7ba868a5a7e5dfa71ee92a3a8bae97adcea1c8cfb1009280ee6c"
+webhooksCleanup:
+  image:
+    tag: "v1.20.0@sha256:6079a30d75fe7ba868a5a7e5dfa71ee92a3a8bae97adcea1c8cfb1009280ee6c"
+admissionController:
+  initContainer:
+    image:
+      tag: "v1.20.0@sha256:339067e083430e0c97007541bef9cfdbac89bee13f7228772c77ae8aead14b8b"
+  container:
+    image:
+      tag: "v1.20.0@sha256:9de49c5416ea536f00a205527197ac048abdf32c5a75d633cd9afff8928f359d"
+backgroundController:
+  image:
+    tag: "v1.20.0@sha256:c72df38320a48fc9de10f9d23d087a117853bb08207b7f60f6d1e8457fb3ddb7"
+cleanupController:
+  image:
+    tag: "v1.20.0@sha256:0f9ce0c203561c52499e871a987ff987371f57385fcafe7af1a01dfd6db1feee"
+reportsController:
+  image:
+    tag: "v1.20.0@sha256:f54e3cc106fadb1a615d0ec11c42f741f51d3580a5f70dfbe7bd7ec58864ef03"
+
+features:
+  # PolicyExceptions are off by default. On, but only honoured in namespace kyverno, which
+  # only the platform can write to. Exceptions anywhere else are ignored, so whoever can
+  # create objects in `app` can't exempt their own workloads (ADR 0013).
+  policyExceptions:
+    enabled: true
+    namespace: kyverno

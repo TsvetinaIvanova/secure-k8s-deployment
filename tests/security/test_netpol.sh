@@ -7,6 +7,8 @@ source "$(dirname "$0")/lib.sh"
 echo "== test_netpol: namespace $NS"
 
 # Has curl and sleep, and runs as non-root. Pinned here; list-images.sh reads this line.
+# The probe in app is allowed only by policies/kyverno/exception-netpol-probe.yaml, which pins
+# the same digest: change both together, or the probe is rejected.
 TEST_IMAGE=docker.io/curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
 
 CLIENT_NS=client

@@ -1,0 +1,41 @@
+# New namespace with no Pod Security labels: mutate fills them in.
+apiVersion: v1
+kind: Namespace
+metadata: {name: team-a}
+---
+# Already labelled restricted with a different warn version: mutate keeps what's set.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-b
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.37
+---
+# Weaker levels are kept by mutate and rejected by validate.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: privileged-ns
+  labels: {pod-security.kubernetes.io/enforce: privileged}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: baseline-ns
+  labels: {pod-security.kubernetes.io/enforce: baseline}
+---
+# restricted, but at an old version with an older, weaker rule set.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: old-version-ns
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.20
+---
+# Created by the cluster and needed unrestricted by kind: neither policy applies.
+apiVersion: v1
+kind: Namespace
+metadata: {name: local-path-storage}
