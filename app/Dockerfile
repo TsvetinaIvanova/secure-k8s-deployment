@@ -1,6 +1,6 @@
 # Build stage: has pip and a shell, used only to install dependencies.
 # Must match the runtime's Python minor version (3.13) and Debian release (trixie).
-FROM python:3.13-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962 AS build
+FROM python:3.13-slim-trixie@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50 AS build
 
 COPY requirements.txt /build/requirements.txt
 # --only-binary: install wheels only, so no package's setup.py runs at build time.
@@ -8,7 +8,7 @@ COPY requirements.txt /build/requirements.txt
 RUN pip install --no-cache-dir --only-binary=:all: --target /deps -r /build/requirements.txt
 
 # Runtime stage: distroless, no shell or package manager. See docs/adr/0001-base-image.md.
-FROM gcr.io/distroless/python3-debian13:nonroot@sha256:6c4cb3bfa4b555429dd19541796a6ba6b30c84675b460bd0bd5072f7d5bdae71
+FROM gcr.io/distroless/python3-debian13:nonroot@sha256:72de1dda9d4c52c370e2ef2d93c28e3e1a8193c92058b7dfa42bace38a83d114
 
 # Code and dependencies stay owned by root, so the app user cannot modify them.
 COPY --from=build /deps /deps
